@@ -96,7 +96,7 @@ canvas {
 .led.c { background:#bb66ff; box-shadow:0 0 7px #bb66ff; animation-delay:1.3s; }
 @keyframes led { from{opacity:.25} to{opacity:1} }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -755,15 +755,16 @@ document.addEventListener("mousedown",(e)=>{
 
 function hit(b,x,y){ return x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h; }
 
-// ── REAL MULTIPLAYER via Supabase Realtime ────────────────────────────────────
-const SUPABASE_URL = "https://zbqffzrdjowuqgccsrzy.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpicWZmenJkam93dXFnY2Nzcnp5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2Nzg1MzQsImV4cCI6MjA5MjI1NDUzNH0.Pz0Z_0yyL9IHpFjwb7EumY01D35OLU-liscw7WLRfbY";
-let supaChannel = null;
+// ── REAL MULTIPLAYER via PeerJS (peer-to-peer) ────────────────────────────────
+let myPeer = null;       // our PeerJS instance
+let hostConn = null;     // joiner's connection to host
+let guestConns = [];     // host's connections to guests
 let myPlayerId = Math.random().toString(36).slice(2,8).toUpperCase();
-let lobbyPeers = {}; // peerId -> { name, ready }
+let lobbyPeers = {};     // peerId -> { name, ready }
 
 function generateCode(){ return Math.random().toString(36).substring(2,7).toUpperCase(); }
 
+// ── HOST ──────────────────────────────────────────────────────────────────────
 async function hostGame(){
   lobby.code = generateCode();
   lobby.players = 1;
@@ -771,10 +772,29 @@ async function hostGame(){
   lobbyPeers = {};
   lobbyPeers[myPlayerId] = { name: username||"HOST", ready:true };
   state = "lobby_wait";
-  await connectLobbyChannel(lobby.code);
-  broadcastLobby("join", { name: username||"HOST" });
+
+  // Create peer with room code as ID so guests can find us
+  if(myPeer){ myPeer.destroy(); }
+  myPeer = new Peer("wArena-"+lobby.code);
+  myPeer.on("open", ()=>{
+    // Listen for incoming guest connections
+    myPeer.on("connection", (conn)=>{
+      conn.on("open", ()=>{
+        guestConns.push(conn);
+        conn.on("data", (data)=> onLobbyMsg(data, conn));
+        // Send current lobby state to new guest
+        conn.send({ type:"welcome", from:myPlayerId, name:username||"HOST",
+                    peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name})) });
+      });
+      conn.on("close", ()=>{
+        guestConns = guestConns.filter(c=>c!==conn);
+      });
+    });
+  });
+  myPeer.on("error", (e)=> console.warn("PeerJS host error:", e));
 }
 
+// ── JOIN ──────────────────────────────────────────────────────────────────────
 let joinInput="", joinError="";
 function joinGame(){ joinInput=""; joinError=""; state="joingame"; }
 
@@ -785,61 +805,90 @@ async function submitJoinCode(){
   lobby.code = val;
   lobby.role = "join";
   lobbyPeers = {};
-  lobbyPeers[myPlayerId] = { name: username||"P?", ready:true };
-  await connectLobbyChannel(val);
-  broadcastLobby("join", { name: username||"P?" });
-  joinError = "";
-  state = "lobby_wait";
+  lobbyPeers[myPlayerId] = { name: username||"P2", ready:true };
+
+  if(myPeer){ myPeer.destroy(); }
+  myPeer = new Peer();
+  myPeer.on("open", ()=>{
+    hostConn = myPeer.connect("wArena-"+val, { reliable:true });
+    hostConn.on("open", ()=>{
+      joinError = "";
+      state = "lobby_wait";
+      // Announce ourselves to host
+      hostConn.send({ type:"join", from:myPlayerId, name:username||"P2" });
+      hostConn.on("data", (data)=> onLobbyMsg(data, hostConn));
+    });
+    hostConn.on("error", ()=>{ joinError="CANNOT CONNECT!"; sfxMiss(); });
+    hostConn.on("close", ()=>{ joinError="HOST DISCONNECTED"; });
+  });
+  myPeer.on("error", (e)=>{
+    joinError = "CANNOT CONNECT!"; sfxMiss();
+    console.warn("PeerJS join error:", e);
+  });
+
+  // Timeout if no connection after 8s
+  setTimeout(()=>{ if(joinError==="CONNECTING..."){ joinError="TIMEOUT - CHECK CODE"; sfxMiss(); } }, 8000);
 }
 
-async function connectLobbyChannel(code){
-  if(supaChannel){ try{ supaChannel.unsubscribe(); }catch(e){} }
-  if(!window.supabase){
-    console.warn("Supabase not loaded, local mode only");
-    return;
-  }
-  try {
-    const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
-    supaChannel = client.channel(`word-arena-${code}`, { config:{ broadcast:{ self:false } } });
-    supaChannel
-      .on("broadcast", { event:"lobby" }, ({ payload }) => onLobbyMsg(payload))
-      .subscribe();
-  } catch(e){ console.warn("Supabase connect failed, local mode", e); }
-}
+// ── MESSAGING ─────────────────────────────────────────────────────────────────
+function onLobbyMsg(data, fromConn){
+  const { type, from, name, peers } = data;
 
-function broadcastLobby(type, data={}){
-  if(!supaChannel) return;
-  try { supaChannel.send({ type:"broadcast", event:"lobby", payload:{ type, from:myPlayerId, ...data } }); }
-  catch(e){}
-}
-
-function onLobbyMsg(payload){
-  const { type, from, name } = payload;
-  if(type==="join"){
-    if(!lobbyPeers[from]) sfxPlayerJoin();
-    lobbyPeers[from] = { name: name||from, ready:true };
+  if(type==="welcome"){
+    // Host sent us existing peer list
+    if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:true}; });
+    lobbyPeers[from] = { name:name||"HOST", ready:true };
     lobby.players = Object.keys(lobbyPeers).length;
-    broadcastLobby("join", { name: username||(lobby.role==="host"?"HOST":"P?") }); // echo back so joiner sees us
+    sfxPlayerJoin();
+
+  } else if(type==="join"){
+    // A guest joined — host receives this
+    if(!lobbyPeers[from]) sfxPlayerJoin();
+    lobbyPeers[from] = { name:name||from, ready:true };
+    lobby.players = Object.keys(lobbyPeers).length;
+    // Broadcast updated lobby to all guests
+    broadcastLobby({ type:"joined", from, name, total:lobby.players });
     if(lobby.players >= lobby.required){ sfxLobbyReady(); checkLobbyStart(); }
+
+  } else if(type==="joined"){
+    // Guest receives notification that someone else joined
+    if(!lobbyPeers[from]) lobbyPeers[from] = { name:name||from, ready:true };
+    lobby.players = data.total || Object.keys(lobbyPeers).length;
+    sfxPlayerJoin();
+    if(lobby.players >= lobby.required) sfxLobbyReady();
+
+  } else if(type==="start"){
+    if(lobby.role==="join") startGame(data.diff||"medium", lobby.required);
+
   } else if(type==="leave"){
     delete lobbyPeers[from];
     lobby.players = Object.keys(lobbyPeers).length;
-  } else if(type==="start"){
-    if(lobby.role==="join") startGame("medium", lobby.required);
   }
+}
+
+function broadcastLobby(data){
+  // Host broadcasts to all guests
+  guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
 function checkLobbyStart(){
   if(lobby.players >= lobby.required){
-    broadcastLobby("start");
+    broadcastLobby({ type:"start", diff:"medium" });
     startGame("medium", lobby.required);
   }
 }
 
 function leaveLobbyChannel(){
-  broadcastLobby("leave");
-  if(supaChannel){ try{ supaChannel.unsubscribe(); }catch(e){} supaChannel=null; }
+  broadcastLobby({ type:"leave", from:myPlayerId });
+  if(hostConn){ try{ hostConn.close(); }catch(e){} hostConn=null; }
+  guestConns.forEach(c=>{ try{ c.close(); }catch(e){} }); guestConns=[];
+  if(myPeer){ try{ myPeer.destroy(); }catch(e){} myPeer=null; }
   lobbyPeers={};
+}
+
+// Online status — true if PeerJS is open
+function isOnlineConnected(){
+  return myPeer && myPeer.open;
 }
 
 // ── ACCURACY + PREVIEW STATE ──────────────────────────────────────────────────
@@ -1166,9 +1215,9 @@ function lobbyWait(){
   pixelBox({text:"BACK",x:200,y:548,w:200,h:52},C.red);
 
   // Network status badge
-  const isOnline = supaChannel !== null;
+  const isOnline = isOnlineConnected();
   const netClr = isOnline ? C.green : C.amber;
-  const netTxt = isOnline ? "● ONLINE" : "● LOCAL ONLY";
+  const netTxt = isOnline ? "● ONLINE" : "● CONNECTING";
   ctx.font=`7px ${PX}`; const ntw=ctx.measureText(netTxt).width;
   ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(W-ntw-24,84,ntw+16,18);
   ctx.strokeStyle=netClr; ctx.lineWidth=1; ctx.strokeRect(W-ntw-24,84,ntw+16,18);
