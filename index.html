@@ -96,6 +96,7 @@ canvas {
 .led.c { background:#bb66ff; box-shadow:0 0 7px #bb66ff; animation-delay:1.3s; }
 @keyframes led { from{opacity:.25} to{opacity:1} }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 
@@ -755,8 +756,8 @@ document.addEventListener("mousedown",(e)=>{
 function hit(b,x,y){ return x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h; }
 
 // ── REAL MULTIPLAYER via Supabase Realtime ────────────────────────────────────
-const SUPABASE_URL = "https://xyzcompany.supabase.co"; // placeholder — user sets this
-const SUPABASE_ANON = "your-anon-key";                 // placeholder — user sets this
+const SUPABASE_URL = "https://zbqffzrdjowuqgccsrzy.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpicWZmenJkam93dXFnY2Nzcnp5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2Nzg1MzQsImV4cCI6MjA5MjI1NDUzNH0.Pz0Z_0yyL9IHpFjwb7EumY01D35OLU-liscw7WLRfbY";
 let supaChannel = null;
 let myPlayerId = Math.random().toString(36).slice(2,8).toUpperCase();
 let lobbyPeers = {}; // peerId -> { name, ready }
@@ -793,16 +794,8 @@ async function submitJoinCode(){
 
 async function connectLobbyChannel(code){
   if(supaChannel){ try{ supaChannel.unsubscribe(); }catch(e){} }
-  // Dynamically load Supabase JS if not already loaded
   if(!window.supabase){
-    await new Promise((res,rej)=>{
-      const s=document.createElement("script");
-      s.src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    }).catch(()=>{}); // if CDN fails, fall back to local-only
-  }
-  if(!window.supabase || SUPABASE_URL.includes("xyzcompany")){
-    // No real Supabase configured — stay in local mode
+    console.warn("Supabase not loaded, local mode only");
     return;
   }
   try {
