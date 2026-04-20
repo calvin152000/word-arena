@@ -781,7 +781,10 @@ async function hostGame(){
     myPeer.on("connection", (conn)=>{
       conn.on("open", ()=>{
         guestConns.push(conn);
-        conn.on("data", (data)=> onLobbyMsg(data, conn));
+        conn.on("data", (data)=>{
+          if(data.type==="gamestate") onGameMsg(data);
+          else onLobbyMsg(data, conn);
+        });
         // Send current lobby state to new guest
         conn.send({ type:"welcome", from:myPlayerId, name:username||"HOST",
                     peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name})) });
@@ -816,7 +819,10 @@ async function submitJoinCode(){
       state = "lobby_wait";
       // Announce ourselves to host
       hostConn.send({ type:"join", from:myPlayerId, name:username||"P2" });
-      hostConn.on("data", (data)=> onLobbyMsg(data, hostConn));
+      hostConn.on("data", (data)=>{
+        if(data.type==="gamestate") onGameMsg(data);
+        else onLobbyMsg(data, hostConn);
+      });
     });
     hostConn.on("error", ()=>{ joinError="CANNOT CONNECT!"; sfxMiss(); });
     hostConn.on("close", ()=>{ joinError="HOST DISCONNECTED"; });
@@ -891,6 +897,51 @@ function isOnlineConnected(){
   return myPeer && myPeer.open;
 }
 
+// ── ONLINE GAME STATE SYNC ────────────────────────────────────────────────────
+// In online 2P: players[0] = ME, players[1] = OPPONENT (received state)
+let isOnlineGame = false;
+let opponentState = null; // last received state from opponent
+
+function sendGameState(){
+  if(!isOnlineGame) return;
+  const me = players[0];
+  const data = {
+    type: "gamestate",
+    score: me.score,
+    combo: me.combo,
+    dead: me.dead,
+    rows: me.rows,
+    falling: me.falling ? { text: me.falling.text, col: me.falling.col, y: me.falling.y } : null,
+  };
+  // Send to all connections
+  if(hostConn){ try{ hostConn.send(data); }catch(e){} }
+  guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
+}
+
+function onGameMsg(data){
+  if(data.type !== "gamestate") return;
+  // Update opponent's player state (players[1])
+  const opp = players[1];
+  if(!opp) return;
+  opp.score = data.score;
+  opp.combo = data.combo;
+  opp.dead  = data.dead;
+  opp.rows  = data.rows || [];
+  // Reconstruct falling word position for display
+  if(data.falling){
+    const pBottom = H - 44;
+    const pTop    = 36;
+    opp.falling = { text: data.falling.text, col: data.falling.col,
+                    y: data.falling.y, speed: 0 }; // speed=0 since we don't simulate it
+  } else {
+    opp.falling = null;
+  }
+  // Check if opponent died → game over
+  if(opp.dead && !players[0].dead){
+    setTimeout(()=>{ state="gameover_multi"; }, 1000);
+  }
+}
+
 // ── ACCURACY + PREVIEW STATE ──────────────────────────────────────────────────
 let singleTotalKeys=0, singleCorrectWords=0, singleWrongSubmits=0;
 let singleNextWord=null; // {text, col, x}
@@ -915,7 +966,15 @@ const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
 function startGame(diff, numPlayers){
   state = "game"; difficulty = diff; playerCount = numPlayers || 1;
   paused = false;
-  resetAll(); startBGM("game");
+  isOnlineGame = (numPlayers === 2 && isOnlineConnected());
+  resetAll();
+  // In online mode, name opponent from lobbyPeers
+  if(isOnlineGame && players.length >= 2){
+    const peers = Object.entries(lobbyPeers).filter(([id])=>id!==myPlayerId);
+    if(peers.length > 0) players[1].name = peers[0][1].name || "P2";
+    players[0].name = username ? username.toUpperCase() : "P1";
+  }
+  startBGM("game");
 }
 
 function resetAll(){
@@ -1372,7 +1431,7 @@ function game(){
 }
 
 // ── SPLIT SCREEN GAME ────────────────────────────────────────────────────────
-function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive) {
+function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   const pBottom = py + ph - 44;
   const pTop    = py + 36;
 
@@ -1390,20 +1449,22 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive) {
 
   // Shorter dynamic spawn for split screen too
   const dynInterval = Math.max(30, cfg.spawnBase - p.score * 0.3);
-  p.spawnTimer++;
-  if(!p.falling && p.spawnTimer >= dynInterval){
-    const pool = WORDS[difficulty]||WORDS.easy;
-    const esc2 = getEscalation(p.score);
-    const speed = (cfg.baseSpeed + Math.random()*cfg.rand) * esc2.mult;
-    const col = Math.floor(Math.random() * pCols.length);
-    // Avoid duplicate words
-    const pool2 = WORDS[difficulty]||WORDS.easy;
-    const activeSet = new Set(p.rows.map(r=>r.text));
-    if(p.falling) activeSet.add(p.falling.text);
-    const avail2 = pool2.filter(w=>!activeSet.has(w));
-    const src2 = avail2.length>0?avail2:pool2;
-    p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: pTop, speed };
-    p.spawnTimer = 0;
+  if(!isRemote){
+    p.spawnTimer++;
+    if(!p.falling && p.spawnTimer >= dynInterval){
+      const pool = WORDS[difficulty]||WORDS.easy;
+      const esc2 = getEscalation(p.score);
+      const speed = (cfg.baseSpeed + Math.random()*cfg.rand) * esc2.mult;
+      const col = Math.floor(Math.random() * pCols.length);
+      // Avoid duplicate words
+      const pool2 = WORDS[difficulty]||WORDS.easy;
+      const activeSet = new Set(p.rows.map(r=>r.text));
+      if(p.falling) activeSet.add(p.falling.text);
+      const avail2 = pool2.filter(w=>!activeSet.has(w));
+      const src2 = avail2.length>0?avail2:pool2;
+      p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: pTop, speed };
+      p.spawnTimer = 0;
+    }
   }
 
   for(let i=0;i<p.rows.length;i++){
@@ -1419,7 +1480,7 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive) {
     pxDraw(r.text,wx,wy,rowClr,10,true);
   }
 
-  if(p.falling){
+  if(p.falling && !isRemote){
     p.falling.y += p.falling.speed;
     const limit = pBottom - p.rows.length * pRowH;
     if(p.falling.y >= limit){
@@ -1477,13 +1538,21 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive) {
   ctx.fillStyle=isActive ? p.color : `rgba(${hexRgb(p.color)},0.3)`;
   ctx.fillRect(px, py+ph-44, pw, 2);
 
-  if(isActive){
+  if(isActive && !isRemote){
     ctx.font=`8px ${PX}`;
     pxDraw(">",px+6,py+ph-16,"#2a4a6a",8,false);
     const cursor=Math.floor(Date.now()/400)%2===0?"_":" ";
     const display=p.typed+cursor;
     ctx.font=`9px ${PX}`;
     pxDraw(display,px+20,py+ph-16,p.color,9,true);
+  } else if(isRemote){
+    // Show opponent live indicator
+    ctx.font=`7px ${PX}`;
+    const lbl="● LIVE";
+    const lw2=ctx.measureText(lbl).width;
+    ctx.shadowColor=C.green; ctx.shadowBlur=Math.floor(Date.now()/400)%2===0?6:0;
+    ctx.fillStyle=C.green; ctx.fillText(lbl, px+pw/2-lw2/2, py+ph-14);
+    ctx.shadowBlur=0;
   } else {
     ctx.font=`7px ${PX}`;
     const hint="TAB to switch";
@@ -1519,11 +1588,14 @@ function game2P(){
   const pRowH2=32;
   ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H);
   ctx.fillStyle=C.dim; ctx.fillRect(W/2-1,0,2,H);
-  drawPane(players[0], 0,   0, pw, ph, pCols2, pRowH2, activeTypingPlayer===0);
-  drawPane(players[1], W/2+1, 0, pw, ph, pCols2, pRowH2, activeTypingPlayer===1);
+  // In online mode: left=ME (simulate), right=OPPONENT (display received state only)
+  drawPane(players[0], 0,   0, pw, ph, pCols2, pRowH2, true, false);
+  drawPane(players[1], W/2+1, 0, pw, ph, pCols2, pRowH2, false, isOnlineGame);
   const t=Date.now()*0.003;
   const alpha=0.3+0.2*Math.sin(t);
   ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H);
+  // Broadcast our state to opponent every frame
+  if(isOnlineGame) sendGameState();
   checkMultiGameOver();
 }
 
