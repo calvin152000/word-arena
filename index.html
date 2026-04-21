@@ -257,7 +257,7 @@ c.addEventListener("mousemove",(e)=>{
     if(nameConfirmHovered&&!was2) sfxHover();
   } else { nameConfirmHovered=false; }
 
-  if(!["menu","difficulty","multiplayer","hostjoin","lobby_wait","options"].includes(state)) return;
+  if(!["menu","difficulty","multiplayer","hostjoin","lobby_wait","options","howtoplay"].includes(state)) return;
   let allBtns=[];
   if(state==="menu")        allBtns=menuButtons;
   if(state==="difficulty")  allBtns=diffButtons;
@@ -611,12 +611,12 @@ function pixelBox(b, color=C.teal){
 
 function button(text,x,y,w,h){ return {text,x,y,w,h}; }
 
-const menuButtons    = [button("SINGLE PLAYER",150,200,300,60),button("MULTIPLAYER",150,290,300,60),button("OPTIONS",150,380,300,60)];
+const menuButtons    = [button("SINGLE PLAYER",150,200,300,60),button("MULTIPLAYER",150,280,300,60),button("HOW TO PLAY",150,360,300,60),button("OPTIONS",150,440,300,60)];
 const diffButtons    = [button("EASY",180,160,240,60),button("MEDIUM",180,240,240,60),button("HARD",180,320,240,60),button("DIFFICULT",180,400,240,60),button("BACK",180,480,240,60)];
 const multiButtons   = [button("2 PLAYER MODE",150,200,300,60),button("4 PLAYER MODE",150,290,300,60),button("BACK",150,380,300,60)];
 const hostJoinButtons= [button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
-const menuColors  = [C.teal,C.blue,C.purple];
+const menuColors  = [C.teal,C.blue,C.green,C.purple];
 const diffColors  = [C.green,C.teal,C.amber,C.red,C.dim+"ff"];
 const multiColors = [C.teal,C.blue,C.purple];
 const hjColors    = [C.teal,C.blue,C.purple];
@@ -676,13 +676,22 @@ document.addEventListener("mousedown",(e)=>{
     return;
   }
 
+  if(state==="howtoplay"){
+    const arrowY = H - 74;
+    if(mx>30&&mx<140&&my>arrowY&&my<arrowY+44&&howToPlayPage>0){ howToPlayPage--; sfxClick(); return; }
+    if(mx>W-140&&mx<W-30&&my>arrowY&&my<arrowY+44&&howToPlayPage<HTP_PAGES-1){ howToPlayPage++; sfxClick(); return; }
+    if(mx>160&&mx<440&&my>H-54&&my<H-8){ sfxBack(); state="menu"; howToPlayPage=0; return; }
+    return;
+  }
+
   if(state==="menu"){
     menuButtons.forEach((b,i)=>{
       if(hit(b,mx,my)){
         sfxTransition();
         if(i===0) state="difficulty";
         if(i===1) state="multiplayer";
-        if(i===2) state="options";
+        if(i===2){ state="howtoplay"; howToPlayPage=0; }
+        if(i===3) state="options";
       }
     });
   } else if(state==="difficulty"){
@@ -1020,6 +1029,13 @@ document.addEventListener("keydown",(e)=>{
   if(!audioReady){ initAudio(); audioCtx.resume().then(()=>{ startBGM("menu"); }); }
   else if(audioCtx && audioCtx.state === "suspended"){ audioCtx.resume(); }
 
+  if(state==="howtoplay"){
+    if(e.key==="Escape"||e.key==="Backspace"){ sfxBack(); state="menu"; howToPlayPage=0; return; }
+    if(e.key==="ArrowRight"||e.key==="d"||e.key==="D"){ if(howToPlayPage<HTP_PAGES-1){ howToPlayPage++; sfxClick(); } return; }
+    if(e.key==="ArrowLeft"||e.key==="a"||e.key==="A"){ if(howToPlayPage>0){ howToPlayPage--; sfxClick(); } return; }
+    return;
+  }
+
   if(state==="joingame"){
     if(e.key==="Backspace"){ joinInput=joinInput.slice(0,-1); joinError=""; return; }
     if(e.key==="Enter"){ submitJoinCode(); return; }
@@ -1129,7 +1145,7 @@ function menu(){
   ctx.fillStyle=C.teal; ctx.fillRect(0,80,W,2); ctx.fillRect(0,178,W,2);
   centered("WORD",132,C.teal,36,true); centered("ARENA",174,C.blue,36,true);
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
-  if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",490,C.dim+"ff",10,false);
+  if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",560,C.dim+"ff",10,false);
   if(username){ ctx.font=`8px ${PX}`; const greet="HI, "+username.toUpperCase()+"!"; pxDraw(greet,14,H-16,C.purple,8,true); }
 }
 
@@ -1329,8 +1345,6 @@ function game(){
     pxDraw(r.text,wx,wy,rowClr,13,true);
   }
 
-
-
   if(singleFalling && !paused){
     singleFalling.y+=singleFalling.speed;
     const limit=BOTTOM-singleRows.length*ROW_H;
@@ -1421,10 +1435,10 @@ function game(){
     pxDraw(sfl, W/2-sfw/2, 295, "#8899bb", 8, false);
     // Resume button
     const resumeHover=(lastMouseX>170&&lastMouseX<430&&lastMouseY>310&&lastMouseY<372);
-    pixelBox({text:"▶  RESUME",x:170,y:310,w:260,h:62},resumeHover?C.green:C.teal);
+    pixelBox({text:"RESUME",x:170,y:310,w:260,h:62},resumeHover?C.green:C.teal);
     // Forfeit button
     const forfeitHover=(lastMouseX>170&&lastMouseX<430&&lastMouseY>390&&lastMouseY<452);
-    pixelBox({text:"✕  FORFEIT",x:170,y:390,w:260,h:62},forfeitHover?C.red:"#882233");
+    pixelBox({text:"FORFEIT",x:170,y:390,w:260,h:62},forfeitHover?C.red:"#882233");
     // Hint
     if(Math.floor(Date.now()/600)%2===0) centered("ESC to resume",478,"#2a3a55",8,false);
   }
@@ -1588,13 +1602,11 @@ function game2P(){
   const pRowH2=32;
   ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H);
   ctx.fillStyle=C.dim; ctx.fillRect(W/2-1,0,2,H);
-  // In online mode: left=ME (simulate), right=OPPONENT (display received state only)
   drawPane(players[0], 0,   0, pw, ph, pCols2, pRowH2, true, false);
   drawPane(players[1], W/2+1, 0, pw, ph, pCols2, pRowH2, false, isOnlineGame);
   const t=Date.now()*0.003;
   const alpha=0.3+0.2*Math.sin(t);
   ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H);
-  // Broadcast our state to opponent every frame
   if(isOnlineGame) sendGameState();
   checkMultiGameOver();
 }
@@ -1655,71 +1667,56 @@ function gameover(){
   ctx.fillStyle="#05050f"; ctx.fillRect(60,160,480,390);
   ctx.strokeStyle=C.red; ctx.shadowColor=C.red; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(60,160,480,390); ctx.shadowBlur=0;
   ctx.fillStyle=`rgba(${hexRgb(C.red)},0.25)`; ctx.fillRect(62,162,476,22);
-  // Corner accents
   const acs=9; ctx.fillStyle=C.red;
   [[60,160],[536,160],[60,548],[536,548]].forEach(([ax,ay])=>{ctx.fillRect(ax,ay,acs,2);ctx.fillRect(ax,ay,2,acs);});
   centered("GAME OVER",200,C.red,22,true);
   ctx.fillStyle=`rgba(${hexRgb(C.red)},0.3)`; ctx.fillRect(80,216,440,1);
 
-  // ── Stats panel ──
   const totalSubmits = singleCorrectWords + singleWrongSubmits;
   const accuracy = totalSubmits > 0 ? Math.round((singleCorrectWords / totalSubmits) * 100) : 0;
   const accClr = accuracy>=90?C.green:accuracy>=70?C.teal:accuracy>=50?C.amber:C.red;
 
-  // Score
   ctx.fillStyle="rgba(0,0,0,0.45)"; ctx.fillRect(80,230,440,62);
   ctx.strokeStyle=C.amber; ctx.lineWidth=1; ctx.strokeRect(80,230,440,62);
   pxDraw("SCORE",96,252,"#6677aa",8,false);
   ctx.font=`20px ${PX}`; const scw=ctx.measureText(`${singleScore}`).width;
   pxDraw(`${singleScore}`,480-scw,268,C.amber,20,true);
 
-  // Divider
   ctx.fillStyle=`rgba(${hexRgb(C.teal)},0.2)`; ctx.fillRect(80,302,440,1);
   pxDraw("STATS",96,322,"#6677aa",8,false);
 
-  // Words cleared
   ctx.fillStyle="rgba(0,0,0,0.3)"; ctx.fillRect(80,330,210,52);
   ctx.strokeStyle=`rgba(${hexRgb(C.green)},0.4)`; ctx.lineWidth=1; ctx.strokeRect(80,330,210,52);
   pxDraw("WORDS CLEARED",96,348,"#8899bb",7,false);
   ctx.font=`14px ${PX}`; const wcw=ctx.measureText(`${singleCorrectWords}`).width;
   pxDraw(`${singleCorrectWords}`,272-wcw,370,C.green,14,true);
 
-  // Wrong submits
   ctx.fillStyle="rgba(0,0,0,0.3)"; ctx.fillRect(310,330,210,52);
   ctx.strokeStyle=`rgba(${hexRgb(C.red)},0.4)`; ctx.lineWidth=1; ctx.strokeRect(310,330,210,52);
   pxDraw("WRONG SUBMITS",326,348,"#8899bb",7,false);
   ctx.font=`14px ${PX}`; const wsw=ctx.measureText(`${singleWrongSubmits}`).width;
   pxDraw(`${singleWrongSubmits}`,502-wsw,370,singleWrongSubmits===0?C.green:C.red,14,singleWrongSubmits===0);
 
-  // Accuracy — bar with % text inside the fill
   const barX=80, barY=396, barW=440, barH=58;
-  // Background
   ctx.fillStyle="rgba(0,0,0,0.55)"; ctx.fillRect(barX,barY,barW,barH);
-  // Fill
   const fillW=Math.round(barW*(accuracy/100));
   ctx.fillStyle=`rgba(${hexRgb(accClr)},0.28)`; ctx.fillRect(barX,barY,fillW,barH);
-  // Border
   ctx.strokeStyle=accClr; ctx.shadowColor=accClr; ctx.shadowBlur=10; ctx.lineWidth=2; ctx.strokeRect(barX,barY,barW,barH); ctx.shadowBlur=0;
-  // Corner accents on bar
   const bcs=6; ctx.fillStyle=accClr;
   ctx.fillRect(barX,barY,bcs,2);ctx.fillRect(barX,barY,2,bcs);
   ctx.fillRect(barX+barW-bcs,barY,bcs,2);ctx.fillRect(barX+barW-2,barY,2,bcs);
   ctx.fillRect(barX,barY+barH-2,bcs,2);ctx.fillRect(barX,barY+barH-bcs,2,bcs);
   ctx.fillRect(barX+barW-bcs,barY+barH-2,bcs,2);ctx.fillRect(barX+barW-2,barY+barH-bcs,2,bcs);
-  // "ACCURACY" label — left inside bar
   pxDraw("ACCURACY",barX+12,barY+18,"#8899bb",7,false);
-  // Percentage — centered inside bar, large
   const accLabel=`${accuracy}%`;
   ctx.font=`20px ${PX}`; const alw=ctx.measureText(accLabel).width;
   pxDraw(accLabel, barX+(barW-alw)/2, barY+barH/2+9, accClr, 20, true);
-  // Grade badge — right side inside bar
   const grade=accuracy===100?"S+":accuracy>=90?"S":accuracy>=75?"A":accuracy>=55?"B":accuracy>=35?"C":"D";
   const gradeClr=accuracy===100?"#ffdd00":accuracy>=90?C.green:accuracy>=75?C.teal:accuracy>=55?C.amber:C.red;
   ctx.font=`16px ${PX}`; const gw=ctx.measureText(grade).width;
   ctx.shadowColor=gradeClr; ctx.shadowBlur=12;
   ctx.fillStyle=gradeClr; ctx.fillText(grade, barX+barW-gw-14, barY+barH/2+7); ctx.shadowBlur=0;
 
-  // Buttons
   const goPlayHov=(lastMouseX>80&&lastMouseX<300&&lastMouseY>500&&lastMouseY<548);
   const goMenuHov=(lastMouseX>310&&lastMouseX<530&&lastMouseY>500&&lastMouseY<548);
   pixelBox({text:"PLAY AGAIN",x:80,y:500,w:220,h:48},goPlayHov?C.green:C.teal);
@@ -1751,7 +1748,6 @@ function drawJoinGame(){
 function drawOptions(){
   centered("OPTIONS",110,C.purple,20,true);
 
-  // ── AUDIO section ──
   pxDraw("AUDIO",100,188,"#6677aa",9,false);
   ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,196,400,1);
   const son=soundEnabled, tclr=son?C.teal:"#445566";
@@ -1768,12 +1764,10 @@ function drawOptions(){
   pxDraw("SOUND",220,236,tclr,11,son); pxDraw(son?"ON":"OFF",220,258,son?C.green:C.red,10,false);
   pxDraw("CLICK TO TOGGLE",150,295,"#2a4a6a",8,false);
 
-  // ── THEME section ──
   pxDraw("COLOR THEME",100,332,"#6677aa",9,false);
   ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,340,400,1);
   pxDraw("SELECT A THEME:",100,362,"#aabbcc",8,false);
 
-  // 2 rows × 3 cols of theme swatches
   for(let i=0;i<THEMES.length;i++){
     const th=THEMES[i];
     const col=i%3, row=Math.floor(i/3);
@@ -1782,20 +1776,16 @@ function drawOptions(){
     const t=Date.now()*0.004;
     const pulse=0.5+0.5*Math.sin(t);
 
-    // Swatch background
     ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(tx+3,ty+3,110,52);
     ctx.fillStyle=`rgba(${hexRgb(th.teal)},0.12)`; ctx.fillRect(tx,ty,110,52);
 
-    // Mini color stripe preview
     const stripes=[th.teal,th.blue,th.purple,th.amber,th.green];
     stripes.forEach((clr,si)=>{ ctx.fillStyle=clr; ctx.fillRect(tx+si*22,ty+38,22,14); });
 
-    // Border — glowing if active
     ctx.lineWidth=2;
     if(isActive){
       ctx.strokeStyle=th.teal; ctx.shadowColor=th.teal; ctx.shadowBlur=12*pulse;
       ctx.strokeRect(tx,ty,110,52); ctx.shadowBlur=0;
-      // Active tick
       ctx.fillStyle=th.teal; ctx.shadowColor=th.teal; ctx.shadowBlur=8;
       ctx.beginPath(); ctx.arc(tx+100,ty+10,5,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
     } else {
@@ -1803,14 +1793,12 @@ function drawOptions(){
       ctx.strokeRect(tx,ty,110,52);
     }
 
-    // Corner accents
     const cs=5; ctx.fillStyle=isActive?th.teal:`rgba(${hexRgb(th.teal)},0.5)`;
     ctx.fillRect(tx,ty,cs,2); ctx.fillRect(tx,ty,2,cs);
     ctx.fillRect(tx+108,ty,cs,2); ctx.fillRect(tx+108,ty,2,cs);
     ctx.fillRect(tx,ty+50,cs,2); ctx.fillRect(tx,ty+46,2,cs);
     ctx.fillRect(tx+108,ty+50,cs,2); ctx.fillRect(tx+108,ty+46,2,cs);
 
-    // Name label
     ctx.font=`7px ${PX}`; const nw=ctx.measureText(th.name).width;
     if(isActive){ ctx.shadowColor=th.teal; ctx.shadowBlur=8; }
     ctx.fillStyle=isActive?th.teal:`rgba(${hexRgb(th.teal)},0.8)`;
@@ -1871,11 +1859,9 @@ document.addEventListener("mousedown",(e)=>{
     const rect=c.getBoundingClientRect();
     const mx=(e.clientX-rect.left)*(W/rect.width);
     const my=(e.clientY-rect.top)*(H/rect.height);
-    // Play Again
     if(mx>80&&mx<300&&my>532&&my<576){
       sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200);
     }
-    // Menu
     if(mx>310&&mx<530&&my>532&&my<576){
       sfxTransition(); state="menu"; resetAll(); startBGM("menu");
     }
@@ -1883,6 +1869,245 @@ document.addEventListener("mousedown",(e)=>{
 }, true);
 
 let lastState="";
+
+// ── HOW TO PLAY ───────────────────────────────────────────────────────────────
+let howToPlayPage = 0;
+const HTP_PAGES = 3;
+
+function drawHowToPlay(){
+  const t = Date.now() * 0.002;
+
+  ctx.fillStyle = "rgba(0,5,20,0.88)"; ctx.fillRect(0, 0, W, 68);
+  ctx.fillStyle = C.teal; ctx.fillRect(0, 66, W, 2);
+  centered("HOW TO PLAY", 44, C.teal, 16, true);
+
+  for(let i = 0; i < HTP_PAGES; i++){
+    const dx = W/2 - (HTP_PAGES*18)/2 + i*18 + 9, dy = 58;
+    ctx.beginPath(); ctx.arc(dx, dy, 4, 0, Math.PI*2);
+    if(i === howToPlayPage){
+      ctx.fillStyle = C.teal; ctx.shadowColor = C.teal; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0;
+    } else {
+      ctx.fillStyle = C.dim+"aa"; ctx.fill();
+    }
+  }
+
+  if(howToPlayPage === 0) htpPage0(t);
+  else if(howToPlayPage === 1) htpPage1();
+  else htpPage2();
+
+  const arrowY = H - 74;
+  if(howToPlayPage > 0){
+    const lhov = lastMouseX > 30 && lastMouseX < 140 && lastMouseY > arrowY && lastMouseY < arrowY + 44;
+    pixelBox({text:"< PREV", x:30, y:arrowY, w:110, h:44}, lhov ? C.green : C.teal);
+  }
+  if(howToPlayPage < HTP_PAGES - 1){
+    const rhov = lastMouseX > W-140 && lastMouseX < W-30 && lastMouseY > arrowY && lastMouseY < arrowY + 44;
+    pixelBox({text:"NEXT >", x:W-140, y:arrowY, w:110, h:44}, rhov ? C.green : C.blue);
+  }
+
+  ctx.font = `7px ${PX}`; const pl = `${howToPlayPage+1} / ${HTP_PAGES}`; const plw = ctx.measureText(pl).width;
+  pxDraw(pl, W/2-plw/2, arrowY+28, "#334466", 7, false);
+
+  const bhov = lastMouseX > 160 && lastMouseX < 440 && lastMouseY > H-54 && lastMouseY < H-8;
+  pixelBox({text:"< BACK TO MENU", x:160, y:H-54, w:280, h:46}, bhov ? C.amber : C.purple);
+}
+
+function htpBox(x, y, w, h, color){
+  ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(x+3, y+3, w, h);
+  ctx.fillStyle = "rgba(4,4,18,0.92)"; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h);
+  const s=5; ctx.fillStyle = color;
+  ctx.fillRect(x,y,s,2);ctx.fillRect(x,y,2,s);ctx.fillRect(x+w-s,y,s,2);ctx.fillRect(x+w-2,y,2,s);
+  ctx.fillRect(x,y+h-2,s,2);ctx.fillRect(x,y+h-s,2,s);ctx.fillRect(x+w-s,y+h-2,s,2);ctx.fillRect(x+w-2,y+h-s,2,s);
+}
+
+function htpLabel(text, x, y, color, size=8){
+  ctx.font = `${size}px ${PX}`;
+  ctx.shadowColor = color; ctx.shadowBlur = 6;
+  ctx.fillStyle = color; ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+}
+
+function htpPage0(t){
+  // OBJECTIVE
+  htpBox(30, 80, 540, 60, C.teal);
+  ctx.fillStyle = `rgba(${hexRgb(C.teal)},0.07)`; ctx.fillRect(30,80,540,60);
+  htpLabel("OBJECTIVE", 46, 102, C.teal, 8);
+  ctx.font = `7px ${PX}`; ctx.fillStyle = "#99aabb";
+  ctx.fillText("Words fall from the top. Type the word exactly", 46, 120);
+  ctx.fillText("and press ENTER to destroy it before it stacks!", 46, 134);
+
+  // CONTROLS box
+  htpBox(30, 152, 330, 188, C.purple);
+  htpLabel("CONTROLS", 46, 174, C.purple, 8);
+  ctx.fillStyle = `rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(46,180,295,1);
+  const controls = [
+    ["TYPE LETTERS", "Build the target word"],
+    ["BACKSPACE",    "Delete last character"],
+    ["ENTER",        "Submit your typed word"],
+    ["ESC / PAUSE",  "Pause (single player)"],
+    ["TAB",          "Switch active player"],
+  ];
+  controls.forEach(([key, desc], i)=>{
+    const ky = 198 + i*28;
+    ctx.font=`7px ${PX}`; ctx.fillStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=4;
+    ctx.fillText(key, 46, ky); ctx.shadowBlur=0;
+    const kw = ctx.measureText(key).width;
+    ctx.fillStyle="#667799"; ctx.fillText("  "+desc, 46+kw+6, ky);
+  });
+
+  // Animated demo pane
+  htpBox(372, 152, 198, 188, C.blue);
+  ctx.save(); ctx.beginPath(); ctx.rect(372,152,198,188); ctx.clip();
+  // header
+  ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(372,152,198,24);
+  htpLabel("DEMO", 372+90-18, 168, C.blue, 7);
+  // stacked rows
+  const demoStacked = ["STACK","ARRAY","PARSE"];
+  demoStacked.forEach((w,i)=>{
+    const wy = 330 - i*28;
+    ctx.font=`8px ${PX}`; const ww=ctx.measureText(w).width;
+    ctx.fillStyle=`rgba(0,230,150,0.1)`; ctx.fillRect(380,wy-14,ww+8,18);
+    ctx.strokeStyle=`rgba(0,230,150,0.35)`; ctx.lineWidth=1; ctx.strokeRect(380,wy-14,ww+8,18);
+    pxDraw(w,380,wy,C.green,8,false);
+  });
+  // Animated falling word
+  const fy = 176 + ((Date.now()*0.04)%80);
+  ctx.font=`9px ${PX}`; const fw=ctx.measureText("LOOP").width;
+  ctx.fillStyle=`rgba(0,180,255,0.15)`; ctx.fillRect(380,fy-16,fw+8,22);
+  ctx.strokeStyle=`rgba(0,200,255,0.5)`; ctx.lineWidth=1; ctx.strokeRect(380,fy-16,fw+8,22);
+  pxDraw("LOOP",380,fy,C.teal,9,true);
+  // type bar
+  ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(372,316,198,24);
+  ctx.fillStyle=C.teal; ctx.fillRect(372,316,198,2);
+  const tc=Math.floor(Date.now()/500)%2===0?"_":" ";
+  ctx.font=`7px ${PX}`; pxDraw("LOOP"+tc,380,334,C.teal,7,true);
+  ctx.restore();
+
+  // Result labels
+  htpBox(30, 352, 160, 52, C.green);
+  htpLabel("HIT!", 46, 372, C.green, 9);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#667799"; ctx.fillText("+POINTS+COMBO", 46, 390);
+
+  htpBox(202, 352, 158, 52, C.red);
+  htpLabel("MISS!", 218, 372, C.red, 9);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#667799"; ctx.fillText("COMBO RESETS", 218, 390);
+
+  htpBox(372, 352, 198, 52, "#334455");
+  htpLabel("STACK FULL?", 388, 372, C.amber, 7);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#667799"; ctx.fillText("GAME OVER!", 388, 390);
+}
+
+function htpPage1(){
+  htpBox(30, 80, 540, 52, C.amber);
+  ctx.fillStyle=`rgba(${hexRgb(C.amber)},0.07)`; ctx.fillRect(30,80,540,52);
+  htpLabel("SCORING & DIFFICULTY", 50, 102, C.amber, 9);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#99aabb";
+  ctx.fillText("Higher difficulty = faster words + more points. Choose wisely!", 50, 122);
+
+  htpBox(30, 144, 540, 168, C.dim);
+  const diffs = [
+    ["EASY",      "Slow & gentle    ", "+5  pts", C.green],
+    ["MEDIUM",    "Moderate speed  ", "+10 pts", C.teal],
+    ["HARD",      "Fast! Stay sharp", "+15 pts", C.amber],
+    ["DIFFICULT", "Blazing fast!!!  ", "+25 pts", C.red],
+  ];
+  htpLabel("DIFFICULTY TABLE", 50, 166, "#6677aa", 7);
+  ctx.fillStyle=C.dim+"88"; ctx.fillRect(50,172,490,1);
+  diffs.forEach(([name, speed, pts, clr], i)=>{
+    const ry = 190 + i*34;
+    ctx.fillStyle=`rgba(${hexRgb(clr)},0.07)`; ctx.fillRect(32,ry-18,536,28);
+    htpLabel(name, 50, ry, clr, 8);
+    ctx.font=`7px ${PX}`; ctx.fillStyle="#667799"; ctx.fillText(speed, 200, ry);
+    htpLabel(pts, 468, ry, clr, 8);
+  });
+
+  htpBox(30, 324, 540, 108, C.red);
+  ctx.fillStyle=`rgba(${hexRgb(C.red)},0.06)`; ctx.fillRect(30,324,540,108);
+  htpLabel("SPEED ESCALATION", 50, 346, C.red, 8);
+  ctx.fillStyle=C.dim+"88"; ctx.fillRect(50,352,490,1);
+  const escRows=[
+    ["60  pts","LV.2 — Speeds up a little","#ffbb00"],
+    ["120 pts","LV.3 — FASTER! Flash warning appears","#ff8800"],
+    ["200 pts","LV.4 — DANGER! Screen pulses red","#ff4444"],
+    ["300 pts","INSANE! Words rain at max velocity","#ff2266"],
+  ];
+  escRows.forEach(([sc, desc, clr], i)=>{
+    const ey = 370 + i*24;
+    ctx.font=`7px ${PX}`; ctx.fillStyle=clr; ctx.shadowColor=clr; ctx.shadowBlur=4;
+    ctx.fillText(sc, 50, ey); ctx.shadowBlur=0;
+    ctx.fillStyle="#8899aa"; ctx.fillText("   "+desc, 50+70, ey);
+  });
+
+  htpBox(30, 444, 540, 84, C.green);
+  ctx.fillStyle=`rgba(${hexRgb(C.green)},0.06)`; ctx.fillRect(30,444,540,84);
+  htpLabel("COMBO SYSTEM", 50, 464, C.green, 8);
+  ctx.fillStyle=C.dim+"88"; ctx.fillRect(50,470,490,1);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#99aabb";
+  ctx.fillText("Each correct word in a row builds your combo multiplier.", 50, 486);
+  ctx.fillText("A wrong submission resets your combo back to zero.", 50, 504);
+  htpLabel("x1  ->  x2  ->  x3  ->  BONUS POINTS!", 50, 520, C.amber, 7);
+}
+
+function htpPage2(){
+  htpBox(30, 80, 540, 52, C.blue);
+  ctx.fillStyle=`rgba(${hexRgb(C.blue)},0.07)`; ctx.fillRect(30,80,540,52);
+  htpLabel("GAME MODES", 50, 102, C.blue, 9);
+  ctx.font=`7px ${PX}`; ctx.fillStyle="#99aabb";
+  ctx.fillText("Word Arena supports solo and local / online multiplayer play.", 50, 122);
+
+  const modes=[
+    {
+      title:"SINGLE PLAYER",
+      color: C.teal,
+      lines:[
+        "Play solo against a growing word stack.",
+        "Game ends when 14+ words fill your lane.",
+        "Score tracked with accuracy grade (D to S+).",
+        "Pause anytime with ESC or the top HUD button.",
+      ]
+    },
+    {
+      title:"2 PLAYER MODE  (online P2P)",
+      color: C.purple,
+      lines:[
+        "Split-screen: each player has their own lane.",
+        "Host a room → share the 5-letter room code.",
+        "Friend joins via 'JOIN GAME' + room code.",
+        "Last player standing wins the match!",
+      ]
+    },
+    {
+      title:"4 PLAYER MODE  (local / online)",
+      color: C.amber,
+      lines:[
+        "Screen splits into 4 quadrants, one per player.",
+        "Press TAB to switch which lane you're typing in.",
+        "All 4 players must join the lobby to start.",
+        "Compete for the highest score on screen!",
+      ]
+    },
+  ];
+
+  modes.forEach((m, i)=>{
+    const by = 144 + i*150;
+    htpBox(30, by, 540, 136, m.color);
+    ctx.fillStyle=`rgba(${hexRgb(m.color)},0.08)`; ctx.fillRect(30,by,540,136);
+    ctx.fillStyle=`rgba(${hexRgb(m.color)},0.18)`; ctx.fillRect(30,by,540,26);
+    htpLabel(m.title, 50, by+18, m.color, 8);
+    m.lines.forEach((line, li)=>{
+      const ly = by + 44 + li*24;
+      ctx.fillStyle=m.color; ctx.fillRect(48, ly-8, 4, 4);
+      ctx.font=`7px ${PX}`; ctx.fillStyle="#99aabb"; ctx.fillText(line, 60, ly);
+    });
+  });
+
+  htpBox(30, 596, 540, 46, C.red);
+  ctx.fillStyle=`rgba(${hexRgb(C.red)},0.1)`; ctx.fillRect(30,596,540,46);
+  ctx.font=`7px ${PX}`; const warn="!! STACK OVERFLOW = GAME OVER — keep that stack clear !!";
+  const ww=ctx.measureText(warn).width;
+  pxDraw(warn, W/2-ww/2, 624, C.red, 7, true);
+}
 
 function loop(){
   bg();
@@ -1893,6 +2118,7 @@ function loop(){
   else if(state==="hostjoin")     hostJoinMenu();
   else if(state==="joingame")     drawJoinGame();
   else if(state==="options")      drawOptions();
+  else if(state==="howtoplay")    drawHowToPlay();
   else if(state==="lobby_wait")   lobbyWait();
   else if(state==="game"){
     if(playerCount === 1)       game();
@@ -1905,7 +2131,7 @@ function loop(){
   drawMusicIcon();
 
   if(state !== lastState && audioReady){
-    if(["menu","difficulty","multiplayer","hostjoin","joingame","options","lobby_wait"].includes(state)) startBGM("menu");
+    if(["menu","difficulty","multiplayer","hostjoin","joingame","options","lobby_wait","howtoplay"].includes(state)) startBGM("menu");
     else if(state==="game") startBGM("game");
     lastState=state;
   }
