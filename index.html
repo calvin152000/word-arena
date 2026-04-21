@@ -244,7 +244,6 @@ c.addEventListener("mousemove",(e)=>{
   musicIconHovered = hit(MUSIC_BTN, mx, my);
   if(musicIconHovered && !wasHovered) sfxHover();
 
-  // Pause button hover (single player in-game)
   if(state==="game" && playerCount===1){
     const wasP = pauseBtnHovered;
     pauseBtnHovered = hit(PAUSE_BTN_SP, mx, my);
@@ -474,7 +473,6 @@ const WORDS = {
   difficult: ["ALGORITHM","POLYMORPHISM","ENCAPSULATION","COMPUTATION","ABSTRACTION","INHERITANCE","RECURSION","MIDDLEWARE","ASYNCHRONOUS","COMPILATION","CONCURRENCY","DISTRIBUTED","ENCRYPTION","FILESYSTEM","GENERALIZATION","HEXADECIMAL","INTERPOLATION","JAVASCRIPT","KUBERNETES","LOGARITHMIC","MANIPULATION","NORMALIZATION","OPTIMIZATION","PARALLELISM","QUANTIZATION","REFACTORING","SERIALIZATION","TRANSACTIONAL","VIRTUALIZATION","WAVELENGTH"],
 };
 
-// ── SPEED TWEAKS: faster base speeds + shorter spawn intervals ───────────────
 const DIFF_CFG = {
   easy:      { baseSpeed:1.8, rand:0.6, pts:5,  spawnBase:140, spawnRand:50 },
   medium:    { baseSpeed:2.4, rand:0.9, pts:10, spawnBase:115, spawnRand:45 },
@@ -545,10 +543,17 @@ const THEMES = [
 let currentThemeIdx = 0;
 let C = Object.assign({}, THEMES[0]);
 
+// FIX: applyTheme now also refreshes any color arrays that depend on C
 function applyTheme(idx){
   currentThemeIdx = idx;
   const t = THEMES[idx];
   Object.assign(C, t);
+  // Refresh derived color arrays so they stay in sync with the new theme
+  menuColors[0]=C.teal; menuColors[1]=C.blue; menuColors[2]=C.green; menuColors[3]=C.purple;
+  diffColors[0]=C.green; diffColors[1]=C.teal; diffColors[2]=C.amber; diffColors[3]=C.red;
+  multiColors[0]=C.teal; multiColors[1]=C.blue; multiColors[2]=C.purple;
+  hjColors[0]=C.teal; hjColors[1]=C.blue; hjColors[2]=C.purple;
+  PLAYER_COLORS[0]=C.teal; PLAYER_COLORS[1]=C.purple; PLAYER_COLORS[2]=C.amber; PLAYER_COLORS[3]=C.blue;
 }
 
 // ── SPLIT SCREEN PLAYER STATE ────────────────────────────────────────────────
@@ -569,12 +574,9 @@ let singleLastEscDanger = -1, singleEscFlashTimer = 0, singleEscFlashLabel = "";
 let singleSpawnTimer = 0, singleParticles = [];
 
 let scanY = 0, frameN = 0;
-let paused = false; // single-player only
+let paused = false;
 let lastMouseX = 0, lastMouseY = 0;
 
-// Pause button hitbox (top-right of HUD)
-const PAUSE_BTN = {x: W-52, y: 6, w: 44, h: 44}; // shares space — shifted below music icon
-// Actually place pause btn below music icon
 const PAUSE_BTN_SP = {x: W-100, y: 6, w: 44, h: 44};
 let pauseBtnHovered = false;
 
@@ -616,11 +618,16 @@ const diffButtons    = [button("EASY",180,160,240,60),button("MEDIUM",180,240,24
 const multiButtons   = [button("2 PLAYER MODE",150,200,300,60),button("4 PLAYER MODE",150,290,300,60),button("BACK",150,380,300,60)];
 const hostJoinButtons= [button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
+// FIX: Use mutable arrays (not const with inline C references) so applyTheme can update them
 const menuColors  = [C.teal,C.blue,C.green,C.purple];
 const diffColors  = [C.green,C.teal,C.amber,C.red,C.dim+"ff"];
 const multiColors = [C.teal,C.blue,C.purple];
 const hjColors    = [C.teal,C.blue,C.purple];
+const PLAYER_COLORS = [C.teal, C.purple, C.amber, C.blue];
+const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
 
+// ── SINGLE MOUSEDOWN LISTENER (merged) ───────────────────────────────────────
+// FIX: Was two separate mousedown listeners; merged into one to prevent double-firing
 document.addEventListener("mousedown",(e)=>{
   const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(W/rect.width);
@@ -646,7 +653,6 @@ document.addEventListener("mousedown",(e)=>{
     sfxClick(); return;
   }
 
-  // Pause button — single player only
   if(state==="game" && playerCount===1 && hit(PAUSE_BTN_SP, mx, my)){
     paused = !paused;
     if(paused){
@@ -659,14 +665,22 @@ document.addEventListener("mousedown",(e)=>{
     sfxClick(); return;
   }
 
-  // Pause overlay buttons
   if(state==="game" && playerCount===1 && paused){
-    // Resume
     if(mx>170&&mx<430&&my>310&&my<372){ paused=false; singlePausedMs+=Date.now()-singlePauseStartTime; bgmGain.gain.linearRampToValueAtTime(soundEnabled?0.18:0,audioCtx.currentTime+0.15); sfxClick(); return; }
-    // Forfeit
     if(mx>170&&mx<430&&my>390&&my<452){ paused=false; state="gameover"; stopBGM(); sfxMiss(); return; }
-    return; // block other clicks while paused
+    return;
   }
+
+  // FIX: gameover_multi click handling moved here from the second listener
+  if(state==="gameover_multi"){
+    if(mx>80&&mx<300&&my>532&&my<576){
+      sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200); return;
+    }
+    if(mx>310&&mx<530&&my>532&&my<576){
+      sfxTransition(); state="menu"; resetAll(); startBGM("menu"); return;
+    }
+  }
+
   sfxClick();
 
   if(leaveLobbyConfirm && state==="lobby_wait"){
@@ -729,7 +743,6 @@ document.addEventListener("mousedown",(e)=>{
       soundEnabled=!soundEnabled; applyMuteState();
       if(soundEnabled && audioReady && bgmState===null) startBGM("menu");
     }
-    // Theme swatches — 2 rows of 3, each 110x52
     for(let i=0;i<THEMES.length;i++){
       const col=i%3, row=Math.floor(i/3);
       const tx=110+col*130, ty=375+row*68;
@@ -739,18 +752,16 @@ document.addEventListener("mousedown",(e)=>{
     }
     if(mx>180&&mx<420&&my>580&&my<635){ sfxBack(); state="menu"; }
   } else if(state==="gameover"){
-    // Play Again
     if(mx>80&&mx<300&&my>500&&my<548){
       sfxFanfare(); setTimeout(()=>startGame(difficulty,1),200);
     }
-    // Menu
     if(mx>310&&mx<530&&my>500&&my<548){
       sfxTransition(); state="menu"; paused=false; resetAll(); startBGM("menu");
     }
   }
 
   if(state==="game" && playerCount > 1){
-    const paneW = W / (playerCount === 4 ? 2 : 2);
+    const paneW = W / 2;
     if(playerCount === 2){
       if(mx < paneW) activeTypingPlayer = 0;
       else activeTypingPlayer = 1;
@@ -764,16 +775,15 @@ document.addEventListener("mousedown",(e)=>{
 
 function hit(b,x,y){ return x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h; }
 
-// ── REAL MULTIPLAYER via PeerJS (peer-to-peer) ────────────────────────────────
-let myPeer = null;       // our PeerJS instance
-let hostConn = null;     // joiner's connection to host
-let guestConns = [];     // host's connections to guests
+// ── REAL MULTIPLAYER via PeerJS ───────────────────────────────────────────────
+let myPeer = null;
+let hostConn = null;
+let guestConns = [];
 let myPlayerId = Math.random().toString(36).slice(2,8).toUpperCase();
-let lobbyPeers = {};     // peerId -> { name, ready }
+let lobbyPeers = {};
 
 function generateCode(){ return Math.random().toString(36).substring(2,7).toUpperCase(); }
 
-// ── HOST ──────────────────────────────────────────────────────────────────────
 async function hostGame(){
   lobby.code = generateCode();
   lobby.players = 1;
@@ -782,11 +792,9 @@ async function hostGame(){
   lobbyPeers[myPlayerId] = { name: username||"HOST", ready:true };
   state = "lobby_wait";
 
-  // Create peer with room code as ID so guests can find us
   if(myPeer){ myPeer.destroy(); }
   myPeer = new Peer("wArena-"+lobby.code);
   myPeer.on("open", ()=>{
-    // Listen for incoming guest connections
     myPeer.on("connection", (conn)=>{
       conn.on("open", ()=>{
         guestConns.push(conn);
@@ -794,7 +802,6 @@ async function hostGame(){
           if(data.type==="gamestate") onGameMsg(data);
           else onLobbyMsg(data, conn);
         });
-        // Send current lobby state to new guest
         conn.send({ type:"welcome", from:myPlayerId, name:username||"HOST",
                     peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name})) });
       });
@@ -806,14 +813,16 @@ async function hostGame(){
   myPeer.on("error", (e)=> console.warn("PeerJS host error:", e));
 }
 
-// ── JOIN ──────────────────────────────────────────────────────────────────────
-let joinInput="", joinError="";
-function joinGame(){ joinInput=""; joinError=""; state="joingame"; }
+// FIX: joinError state tracked as an object to avoid brittle string comparison
+let joinInput="", joinErrorMsg="", joinConnecting=false;
+
+function joinGame(){ joinInput=""; joinErrorMsg=""; joinConnecting=false; state="joingame"; }
 
 async function submitJoinCode(){
   const val = joinInput.toUpperCase().trim();
-  if(val.length < 3){ joinError="ENTER A CODE!"; sfxMiss(); return; }
-  joinError = "CONNECTING...";
+  if(val.length < 3){ joinErrorMsg="ENTER A CODE!"; sfxMiss(); return; }
+  joinConnecting = true;
+  joinErrorMsg = "";
   lobby.code = val;
   lobby.role = "join";
   lobbyPeers = {};
@@ -824,49 +833,44 @@ async function submitJoinCode(){
   myPeer.on("open", ()=>{
     hostConn = myPeer.connect("wArena-"+val, { reliable:true });
     hostConn.on("open", ()=>{
-      joinError = "";
+      joinConnecting = false;
+      joinErrorMsg = "";
       state = "lobby_wait";
-      // Announce ourselves to host
       hostConn.send({ type:"join", from:myPlayerId, name:username||"P2" });
       hostConn.on("data", (data)=>{
         if(data.type==="gamestate") onGameMsg(data);
         else onLobbyMsg(data, hostConn);
       });
     });
-    hostConn.on("error", ()=>{ joinError="CANNOT CONNECT!"; sfxMiss(); });
-    hostConn.on("close", ()=>{ joinError="HOST DISCONNECTED"; });
+    hostConn.on("error", ()=>{ joinConnecting=false; joinErrorMsg="CANNOT CONNECT!"; sfxMiss(); });
+    hostConn.on("close", ()=>{ joinConnecting=false; joinErrorMsg="HOST DISCONNECTED"; });
   });
   myPeer.on("error", (e)=>{
-    joinError = "CANNOT CONNECT!"; sfxMiss();
+    joinConnecting=false; joinErrorMsg = "CANNOT CONNECT!"; sfxMiss();
     console.warn("PeerJS join error:", e);
   });
 
-  // Timeout if no connection after 8s
-  setTimeout(()=>{ if(joinError==="CONNECTING..."){ joinError="TIMEOUT - CHECK CODE"; sfxMiss(); } }, 8000);
+  // FIX: Timeout uses joinConnecting flag instead of string comparison
+  setTimeout(()=>{ if(joinConnecting){ joinConnecting=false; joinErrorMsg="TIMEOUT - CHECK CODE"; sfxMiss(); } }, 8000);
 }
 
-// ── MESSAGING ─────────────────────────────────────────────────────────────────
 function onLobbyMsg(data, fromConn){
   const { type, from, name, peers } = data;
 
   if(type==="welcome"){
-    // Host sent us existing peer list
     if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:true}; });
     lobbyPeers[from] = { name:name||"HOST", ready:true };
     lobby.players = Object.keys(lobbyPeers).length;
     sfxPlayerJoin();
 
   } else if(type==="join"){
-    // A guest joined — host receives this
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from] = { name:name||from, ready:true };
     lobby.players = Object.keys(lobbyPeers).length;
-    // Broadcast updated lobby to all guests
     broadcastLobby({ type:"joined", from, name, total:lobby.players });
     if(lobby.players >= lobby.required){ sfxLobbyReady(); checkLobbyStart(); }
 
   } else if(type==="joined"){
-    // Guest receives notification that someone else joined
     if(!lobbyPeers[from]) lobbyPeers[from] = { name:name||from, ready:true };
     lobby.players = data.total || Object.keys(lobbyPeers).length;
     sfxPlayerJoin();
@@ -882,7 +886,6 @@ function onLobbyMsg(data, fromConn){
 }
 
 function broadcastLobby(data){
-  // Host broadcasts to all guests
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
@@ -901,19 +904,21 @@ function leaveLobbyChannel(){
   lobbyPeers={};
 }
 
-// Online status — true if PeerJS is open
 function isOnlineConnected(){
   return myPeer && myPeer.open;
 }
 
 // ── ONLINE GAME STATE SYNC ────────────────────────────────────────────────────
-// In online 2P: players[0] = ME, players[1] = OPPONENT (received state)
 let isOnlineGame = false;
-let opponentState = null; // last received state from opponent
+
+// FIX: sendGameState now correctly identifies which player is "me" vs opponent
+// rather than always assuming players[0] is the local player
+let localPlayerIdx = 0; // set in startGame for online mode
 
 function sendGameState(){
   if(!isOnlineGame) return;
-  const me = players[0];
+  const me = players[localPlayerIdx];
+  if(!me) return;
   const data = {
     type: "gamestate",
     score: me.score,
@@ -922,66 +927,60 @@ function sendGameState(){
     rows: me.rows,
     falling: me.falling ? { text: me.falling.text, col: me.falling.col, y: me.falling.y } : null,
   };
-  // Send to all connections
   if(hostConn){ try{ hostConn.send(data); }catch(e){} }
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
 function onGameMsg(data){
   if(data.type !== "gamestate") return;
-  // Update opponent's player state (players[1])
-  const opp = players[1];
+  // FIX: opponent index is whichever player is NOT the local player
+  const oppIdx = localPlayerIdx === 0 ? 1 : 0;
+  const opp = players[oppIdx];
   if(!opp) return;
   opp.score = data.score;
   opp.combo = data.combo;
   opp.dead  = data.dead;
   opp.rows  = data.rows || [];
-  // Reconstruct falling word position for display
   if(data.falling){
-    const pBottom = H - 44;
-    const pTop    = 36;
     opp.falling = { text: data.falling.text, col: data.falling.col,
-                    y: data.falling.y, speed: 0 }; // speed=0 since we don't simulate it
+                    y: data.falling.y, speed: 0 };
   } else {
     opp.falling = null;
   }
-  // Check if opponent died → game over
-  if(opp.dead && !players[0].dead){
+  if(opp.dead && !players[localPlayerIdx].dead){
     setTimeout(()=>{ state="gameover_multi"; }, 1000);
   }
 }
 
-// ── ACCURACY + PREVIEW STATE ──────────────────────────────────────────────────
+// ── ACCURACY + TIMING STATE ───────────────────────────────────────────────────
 let singleTotalKeys=0, singleCorrectWords=0, singleWrongSubmits=0;
-let singleNextWord=null; // {text, col, x}
+let singleNextWord=null;
 let singleGameStartTime=0, singlePausedMs=0, singlePauseStartTime=0;
 
 function pickNextWord(){
   const pool=WORDS[difficulty]||WORDS.easy;
   const col=Math.floor(Math.random()*COLS.length);
-  // Collect currently active words to avoid duplicates
   const active=new Set();
   if(singleFalling) active.add(singleFalling.text);
   singleRows.forEach(r=>active.add(r.text));
   const available=pool.filter(w=>!active.has(w));
-  const src=available.length>0?available:pool; // fallback if all words are active
+  const src=available.length>0?available:pool;
   return { text:src[Math.floor(Math.random()*src.length)], col, x:COLS[col] };
 }
 
 // ── START GAME ───────────────────────────────────────────────────────────────
-const PLAYER_COLORS = [C.teal, C.purple, C.amber, C.blue];
-const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
-
 function startGame(diff, numPlayers){
   state = "game"; difficulty = diff; playerCount = numPlayers || 1;
   paused = false;
   isOnlineGame = (numPlayers === 2 && isOnlineConnected());
+  // FIX: set localPlayerIdx — host is always index 0, joiner is index 1
+  localPlayerIdx = (lobby.role === "join") ? 1 : 0;
   resetAll();
-  // In online mode, name opponent from lobbyPeers
   if(isOnlineGame && players.length >= 2){
     const peers = Object.entries(lobbyPeers).filter(([id])=>id!==myPlayerId);
-    if(peers.length > 0) players[1].name = peers[0][1].name || "P2";
-    players[0].name = username ? username.toUpperCase() : "P1";
+    const oppIdx = localPlayerIdx === 0 ? 1 : 0;
+    if(peers.length > 0) players[oppIdx].name = peers[0][1].name || "P2";
+    players[localPlayerIdx].name = username ? username.toUpperCase() : "P1";
   }
   startBGM("game");
 }
@@ -989,18 +988,18 @@ function startGame(diff, numPlayers){
 function resetAll(){
   singleRows=[]; singleFalling=null; singleTyped=""; singleScore=0; singleCombo=0;
   singleLastEscDanger=-1; singleEscFlashTimer=0; singleSpawnTimer=0; singleParticles=[];
-  // Accuracy tracking
   singleTotalKeys=0; singleCorrectWords=0; singleWrongSubmits=0;
-  // Timing for WPM
   singleGameStartTime=Date.now(); singlePausedMs=0; singlePauseStartTime=0;
-  // Word preview — pre-pick the next word to spawn
-  singleNextWord=pickNextWord();
+  // FIX: pickNextWord requires difficulty to be set — it is set in startGame before resetAll
+  singleNextWord = difficulty ? pickNextWord() : null;
   players = [];
   for(let i=0; i<playerCount; i++){
     const pname = (i===0 && username) ? username.toUpperCase() : PLAYER_NAMES[i];
     players.push(makePlayerState(i, PLAYER_COLORS[i], pname, null));
   }
   activeTypingPlayer = 0;
+  // FIX: reset lastStanding on every new game
+  lastStanding = null; lastStandingTimer = 0;
 }
 
 // ── SPAWN ─────────────────────────────────────────────────────────────────────
@@ -1037,10 +1036,10 @@ document.addEventListener("keydown",(e)=>{
   }
 
   if(state==="joingame"){
-    if(e.key==="Backspace"){ joinInput=joinInput.slice(0,-1); joinError=""; return; }
+    if(e.key==="Backspace"){ joinInput=joinInput.slice(0,-1); joinErrorMsg=""; return; }
     if(e.key==="Enter"){ submitJoinCode(); return; }
-    if(e.key==="Escape"){ state="hostjoin"; return; }
-    if(/^[a-zA-Z0-9]$/.test(e.key)&&joinInput.length<8){ joinInput+=e.key.toUpperCase(); joinError=""; }
+    if(e.key==="Escape"){ state="hostjoin"; joinConnecting=false; return; }
+    if(/^[a-zA-Z0-9]$/.test(e.key)&&joinInput.length<8){ joinInput+=e.key.toUpperCase(); joinErrorMsg=""; }
     return;
   }
 
@@ -1064,7 +1063,7 @@ document.addEventListener("keydown",(e)=>{
       }
       sfxClick(); return;
     }
-    if(paused) return; // block typing while paused
+    if(paused) return;
     if(e.key==="Backspace") singleTyped=singleTyped.slice(0,-1);
     else if(e.key==="Enter") singleSubmit();
     else if(/^[a-zA-Z]$/.test(e.key)){ singleTyped+=e.key.toUpperCase(); singleTotalKeys++; sfxType(); }
@@ -1093,12 +1092,11 @@ function singleSubmit(){
     const esc=getEscalation(singleScore);
     const pts=Math.round(cfg.pts*(1+singleCombo*0.1)*(1+esc.danger*0.2));
     singleScore+=pts; singleCombo++; singleCorrectWords++;
-    spawnParticles(singleParticles,COLS[singleRows[i].col]+40,singleBottom-i*ROW_H,C.green,8);
+    spawnParticles(singleParticles,COLS[singleRows[i].col]+40,BOTTOM-i*ROW_H,C.green,8);
     singleRows.splice(i,1); singleCombo>2?sfxCombo():sfxDestroy();
   } else { singleCombo=0; singleWrongSubmits++; sfxMiss(); }
   singleTyped="";
 }
-const singleBottom = BOTTOM;
 
 function multiSubmit(p){
   const val = p.typed.toUpperCase();
@@ -1280,16 +1278,14 @@ function lobbyWait(){
     pxDraw("PLAYER 1",58,216,"#aabbcc",8,false);
     const p1name=username?username.toUpperCase():"HOST"; pxDraw(p1name,58,240,C.teal,9,true); pxDraw("HOST",58,264,"#44ff99",8,false);
     ctx.fillStyle=C.green; ctx.shadowColor=C.green; ctx.shadowBlur=6; ctx.beginPath(); ctx.arc(260,248,6,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0; pxDraw("READY",186,264,C.green,7,false);
-    // Show real peer name for P2 if connected
     const peers=Object.entries(lobbyPeers).filter(([id])=>id!==myPlayerId);
-    const p2label=peers.length>0?"PLAYER 2: "+(peers[0][1].name||"P2"):"PLAYER 2";
+    const p2label=peers.length>0?"P2: "+(peers[0][1].name||"P2"):"PLAYER 2";
     drawLobbyPlayerPanel(320,192,230,140,C.purple,lobby.players>=2,p2label.substring(0,12));
     ctx.fillStyle="#070720"; ctx.fillRect(40,352,510,96); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,352,510,96);
     pxDraw("PLAYERS",58,374,"#aabbcc",8,false); centered(lobby.players+" / "+lobby.required,428,C.amber,26,true);
   }
   pixelBox({text:"BACK",x:200,y:548,w:200,h:52},C.red);
 
-  // Network status badge
   const isOnline = isOnlineConnected();
   const netClr = isOnline ? C.green : C.amber;
   const netTxt = isOnline ? "● ONLINE" : "● CONNECTING";
@@ -1321,7 +1317,6 @@ function game(){
   if(esc.danger>=3){ const p=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${p})`; ctx.fillRect(0,0,W,H); }
   else if(esc.danger===2){ const p=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${p})`; ctx.fillRect(0,0,W,H); }
 
-  // Shorter dynamic spawn interval
   const dynInterval=Math.max(30, cfg.spawnBase - singleScore * 0.3);
   if(!paused){
     singleSpawnTimer++;
@@ -1329,7 +1324,7 @@ function game(){
       const speed=(cfg.baseSpeed+Math.random()*cfg.rand)*esc.mult;
       const nw=singleNextWord||pickNextWord();
       singleFalling={text:nw.text, col:nw.col, x:COLS[nw.col], y:0, speed};
-      singleNextWord=pickNextWord(); // pre-pick next
+      singleNextWord=pickNextWord();
       singleSpawnTimer=0;
     }
   }
@@ -1391,7 +1386,7 @@ function game(){
   pxDraw("TYPE>",16,683,"#2a4a6a",11,false); pxDraw(paused?"":singleTyped+"_",82,683,C.teal,13,Math.floor(Date.now()/400)%2===0);
   if(username){ ctx.font=`7px ${PX}`; pxDraw(username.toUpperCase(),W-14-ctx.measureText(username.toUpperCase()).width,683,C.purple,7,true); }
 
-  // ── PAUSE BUTTON (top HUD) ─────────────────────────────────────────────────
+  // Pause button
   const pb=PAUSE_BTN_SP, phov=pauseBtnHovered, pclr=paused?C.amber:C.teal;
   ctx.fillStyle=phov||paused?"rgba(255,200,0,0.12)":"rgba(0,0,0,0.55)"; ctx.fillRect(pb.x,pb.y,pb.w,pb.h);
   ctx.strokeStyle=paused?C.amber:(phov?C.teal:"rgba(0,229,204,0.4)"); ctx.lineWidth=2; ctx.strokeRect(pb.x,pb.y,pb.w,pb.h);
@@ -1402,10 +1397,8 @@ function game(){
   ctx.fillStyle=pclr;
   const px2=pb.x+pb.w/2, py2=pb.y+pb.h/2;
   if(paused){
-    // Play triangle
     ctx.beginPath(); ctx.moveTo(px2-5,py2-8); ctx.lineTo(px2+9,py2); ctx.lineTo(px2-5,py2+8); ctx.closePath(); ctx.fill();
   } else {
-    // Pause bars
     ctx.fillRect(px2-7,py2-7,5,14); ctx.fillRect(px2+2,py2-7,5,14);
   }
   ctx.shadowBlur=0;
@@ -1417,29 +1410,22 @@ function game(){
     pxDraw(lbl,tx2,ty2,pclr,7,false);
   }
 
-  // ── PAUSE OVERLAY ──────────────────────────────────────────────────────────
+  // Pause overlay
   if(paused){
     ctx.fillStyle="rgba(0,0,0,0.65)"; ctx.fillRect(0,0,W,H);
-    // Panel
     ctx.fillStyle="#05050f"; ctx.fillRect(100,220,400,290);
     ctx.strokeStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(100,220,400,290); ctx.shadowBlur=0;
     ctx.fillStyle=`rgba(${hexRgb(C.amber)},0.18)`; ctx.fillRect(102,222,396,22);
-    // Corner accents
     const acs=9; ctx.fillStyle=C.amber;
     [[100,220],[496,220],[100,508],[496,508]].forEach(([ax,ay])=>{ ctx.fillRect(ax,ay,acs,2);ctx.fillRect(ax,ay,2,acs); });
-    // Title
     centered("PAUSED",256,C.amber,20,true);
     ctx.fillStyle=`rgba(${hexRgb(C.amber)},0.25)`; ctx.fillRect(120,268,360,1);
-    // Score so far
     ctx.font=`8px ${PX}`; const sfl=`SCORE: ${singleScore}`; const sfw=ctx.measureText(sfl).width;
     pxDraw(sfl, W/2-sfw/2, 295, "#8899bb", 8, false);
-    // Resume button
     const resumeHover=(lastMouseX>170&&lastMouseX<430&&lastMouseY>310&&lastMouseY<372);
     pixelBox({text:"RESUME",x:170,y:310,w:260,h:62},resumeHover?C.green:C.teal);
-    // Forfeit button
     const forfeitHover=(lastMouseX>170&&lastMouseX<430&&lastMouseY>390&&lastMouseY<452);
     pixelBox({text:"FORFEIT",x:170,y:390,w:260,h:62},forfeitHover?C.red:"#882233");
-    // Hint
     if(Math.floor(Date.now()/600)%2===0) centered("ESC to resume",478,"#2a3a55",8,false);
   }
 }
@@ -1461,16 +1447,13 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   if(esc.danger>=3){ const pulse=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(px,py,pw,ph); }
   else if(esc.danger===2){ const pulse=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(px,py,pw,ph); }
 
-  // Shorter dynamic spawn for split screen too
   const dynInterval = Math.max(30, cfg.spawnBase - p.score * 0.3);
   if(!isRemote){
     p.spawnTimer++;
     if(!p.falling && p.spawnTimer >= dynInterval){
-      const pool = WORDS[difficulty]||WORDS.easy;
       const esc2 = getEscalation(p.score);
       const speed = (cfg.baseSpeed + Math.random()*cfg.rand) * esc2.mult;
       const col = Math.floor(Math.random() * pCols.length);
-      // Avoid duplicate words
       const pool2 = WORDS[difficulty]||WORDS.easy;
       const activeSet = new Set(p.rows.map(r=>r.text));
       if(p.falling) activeSet.add(p.falling.text);
@@ -1560,7 +1543,6 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.font=`9px ${PX}`;
     pxDraw(display,px+20,py+ph-16,p.color,9,true);
   } else if(isRemote){
-    // Show opponent live indicator
     ctx.font=`7px ${PX}`;
     const lbl="● LIVE";
     const lw2=ctx.measureText(lbl).width;
@@ -1602,8 +1584,13 @@ function game2P(){
   const pRowH2=32;
   ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H);
   ctx.fillStyle=C.dim; ctx.fillRect(W/2-1,0,2,H);
-  drawPane(players[0], 0,   0, pw, ph, pCols2, pRowH2, true, false);
-  drawPane(players[1], W/2+1, 0, pw, ph, pCols2, pRowH2, false, isOnlineGame);
+
+  // FIX: localPlayerIdx determines which pane is "me" and which is remote
+  const meIdx = localPlayerIdx;
+  const oppIdx = meIdx === 0 ? 1 : 0;
+  drawPane(players[meIdx],  0,     0, pw, ph, pCols2, pRowH2, activeTypingPlayer===meIdx,  false);
+  drawPane(players[oppIdx], W/2+1, 0, pw, ph, pCols2, pRowH2, activeTypingPlayer===oppIdx, isOnlineGame);
+
   const t=Date.now()*0.003;
   const alpha=0.3+0.2*Math.sin(t);
   ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H);
@@ -1626,14 +1613,34 @@ function game4P(){
   checkMultiGameOver();
 }
 
+// FIX: checkMultiGameOver rewritten with clear, correct logic
+// lastStanding is used and rendered in the winner screen
+let lastStanding = null, lastStandingTimer = 0;
+
 function checkMultiGameOver(){
-  const aliveCount = players.filter(p=>!p.dead).length;
-  if(aliveCount === 0) state = "gameover_multi";
-  else if(aliveCount === 1 && players.length > 1 && players.every(p=>p.dead||players.filter(x=>!x.dead)[0]===p)){
-    if(!lastStanding){ lastStanding = players.find(p=>!p.dead); lastStandingTimer = 180; }
+  const alive = players.filter(p=>!p.dead);
+  if(alive.length === 0){
+    // Everyone died simultaneously
+    state = "gameover_multi";
+    return;
+  }
+  if(alive.length === 1 && players.length > 1){
+    // One player remains — show winner briefly then go to game over
+    if(!lastStanding){
+      lastStanding = alive[0];
+      lastStandingTimer = 180; // ~3 seconds at 60fps
+    }
+  }
+  // Count down and transition
+  if(lastStanding){
+    lastStandingTimer--;
+    // Draw "WINNER!" overlay on the winning pane
+    // (This is just a flag; actual rendering happens inside drawPane via p.dead checks)
+    if(lastStandingTimer <= 0){
+      state = "gameover_multi";
+    }
   }
 }
-let lastStanding = null, lastStandingTimer = 0;
 
 function gameover_multi(){
   if(bgmState==="game") stopBGM();
@@ -1641,11 +1648,20 @@ function gameover_multi(){
   ctx.fillStyle="#05050f"; ctx.fillRect(80,180,440,360);
   ctx.strokeStyle=C.purple; ctx.shadowColor=C.purple; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(80,180,440,360); ctx.shadowBlur=0;
   ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(82,182,436,20);
-  centered("GAME OVER",250,C.red,22,true);
-  ctx.fillStyle=C.dim; ctx.fillRect(100,265,400,1);
+
+  // FIX: Show winner name if there was a last standing player
+  if(lastStanding){
+    centered("WINNER!",230,C.green,20,true);
+    ctx.font=`12px ${PX}`; const nw=ctx.measureText(lastStanding.name).width;
+    pxDraw(lastStanding.name, W/2-nw/2, 268, lastStanding.color, 12, true);
+  } else {
+    centered("GAME OVER",250,C.red,22,true);
+  }
+
+  ctx.fillStyle=C.dim; ctx.fillRect(100,278,400,1);
   const sorted = [...players].sort((a,b)=>b.score-a.score);
   sorted.forEach((p,i)=>{
-    const y=300+i*52;
+    const y=305+i*52;
     const rankClr=i===0?C.amber:i===1?"#aaaacc":i===2?"#cc8833":C.dim+"ff";
     ctx.font=`8px ${PX}`;
     const rankStr=`${i+1}.`;
@@ -1731,7 +1747,8 @@ function drawJoinGame(){
   pxDraw("ENTER CODE:",100,290,"#aabbcc",10,false);
   const tbx=80,tby=305,tbw=440,tbh=60;
   ctx.fillStyle="rgba(0,5,20,0.9)"; ctx.fillRect(tbx,tby,tbw,tbh);
-  const tbBC=joinError?C.red:C.teal;
+  // FIX: use joinErrorMsg instead of joinError
+  const tbBC=(joinErrorMsg&&!joinConnecting)?C.red:joinConnecting?C.amber:C.teal;
   ctx.strokeStyle=tbBC; ctx.lineWidth=2; ctx.strokeRect(tbx,tby,tbw,tbh);
   const s=6; ctx.fillStyle=tbBC;
   ctx.fillRect(tbx,tby,s,2);ctx.fillRect(tbx,tby,2,s);ctx.fillRect(tbx+tbw-s,tby,s,2);ctx.fillRect(tbx+tbw-2,tby,2,s);
@@ -1739,7 +1756,8 @@ function drawJoinGame(){
   const cursor=Math.floor(Date.now()/500)%2===0?"_":" "; const displayText=joinInput+cursor;
   ctx.font=`18px ${PX}`; const dtw=ctx.measureText(displayText).width;
   pxDraw(displayText,tbx+(tbw-dtw)/2,tby+tbh/2+8,C.teal,18,true);
-  if(joinError){ if(Math.floor(Date.now()/400)%2===0) centered(joinError,382,C.red,10,true); }
+  if(joinConnecting){ if(Math.floor(Date.now()/400)%2===0) centered("CONNECTING...",382,C.amber,10,true); }
+  else if(joinErrorMsg){ if(Math.floor(Date.now()/400)%2===0) centered(joinErrorMsg,382,C.red,10,true); }
   else { pxDraw("PRESS ENTER TO CONFIRM",100,382,"#2a4a6a",8,false); }
   pixelBox({text:"SUBMIT",x:180,y:410,w:240,h:55},C.teal);
   pixelBox({text:"BACK",x:180,y:490,w:240,h:50},C.purple);
@@ -1854,23 +1872,10 @@ function confirmUsername(){
   setTimeout(()=>{ startBGM("menu"); state="menu"; lastState="splash"; }, 350);
 }
 
-document.addEventListener("mousedown",(e)=>{
-  if(state==="gameover_multi"){
-    const rect=c.getBoundingClientRect();
-    const mx=(e.clientX-rect.left)*(W/rect.width);
-    const my=(e.clientY-rect.top)*(H/rect.height);
-    if(mx>80&&mx<300&&my>532&&my<576){
-      sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200);
-    }
-    if(mx>310&&mx<530&&my>532&&my<576){
-      sfxTransition(); state="menu"; resetAll(); startBGM("menu");
-    }
-  }
-}, true);
-
 let lastState="";
 
 // ── HOW TO PLAY ───────────────────────────────────────────────────────────────
+// FIX: howToPlayPage reset to 0 when accessing from menu (handled in all nav paths)
 let howToPlayPage = 0;
 const HTP_PAGES = 3;
 
@@ -1929,7 +1934,6 @@ function htpLabel(text, x, y, color, size=8){
 }
 
 function htpPage0(t){
-  // OBJECTIVE
   htpBox(30, 80, 540, 60, C.teal);
   ctx.fillStyle = `rgba(${hexRgb(C.teal)},0.07)`; ctx.fillRect(30,80,540,60);
   htpLabel("OBJECTIVE", 46, 102, C.teal, 8);
@@ -1937,7 +1941,6 @@ function htpPage0(t){
   ctx.fillText("Words fall from the top. Type the word exactly", 46, 120);
   ctx.fillText("and press ENTER to destroy it before it stacks!", 46, 134);
 
-  // CONTROLS box
   htpBox(30, 152, 330, 188, C.purple);
   htpLabel("CONTROLS", 46, 174, C.purple, 8);
   ctx.fillStyle = `rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(46,180,295,1);
@@ -1956,13 +1959,10 @@ function htpPage0(t){
     ctx.fillStyle="#667799"; ctx.fillText("  "+desc, 46+kw+6, ky);
   });
 
-  // Animated demo pane
   htpBox(372, 152, 198, 188, C.blue);
   ctx.save(); ctx.beginPath(); ctx.rect(372,152,198,188); ctx.clip();
-  // header
   ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(372,152,198,24);
   htpLabel("DEMO", 372+90-18, 168, C.blue, 7);
-  // stacked rows
   const demoStacked = ["STACK","ARRAY","PARSE"];
   demoStacked.forEach((w,i)=>{
     const wy = 330 - i*28;
@@ -1971,20 +1971,17 @@ function htpPage0(t){
     ctx.strokeStyle=`rgba(0,230,150,0.35)`; ctx.lineWidth=1; ctx.strokeRect(380,wy-14,ww+8,18);
     pxDraw(w,380,wy,C.green,8,false);
   });
-  // Animated falling word
   const fy = 176 + ((Date.now()*0.04)%80);
   ctx.font=`9px ${PX}`; const fw=ctx.measureText("LOOP").width;
   ctx.fillStyle=`rgba(0,180,255,0.15)`; ctx.fillRect(380,fy-16,fw+8,22);
   ctx.strokeStyle=`rgba(0,200,255,0.5)`; ctx.lineWidth=1; ctx.strokeRect(380,fy-16,fw+8,22);
   pxDraw("LOOP",380,fy,C.teal,9,true);
-  // type bar
   ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(372,316,198,24);
   ctx.fillStyle=C.teal; ctx.fillRect(372,316,198,2);
   const tc=Math.floor(Date.now()/500)%2===0?"_":" ";
   ctx.font=`7px ${PX}`; pxDraw("LOOP"+tc,380,334,C.teal,7,true);
   ctx.restore();
 
-  // Result labels
   htpBox(30, 352, 160, 52, C.green);
   htpLabel("HIT!", 46, 372, C.green, 9);
   ctx.font=`7px ${PX}`; ctx.fillStyle="#667799"; ctx.fillText("+POINTS+COMBO", 46, 390);
