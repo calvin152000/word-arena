@@ -543,12 +543,10 @@ const THEMES = [
 let currentThemeIdx = 0;
 let C = Object.assign({}, THEMES[0]);
 
-// FIX: applyTheme now also refreshes any color arrays that depend on C
 function applyTheme(idx){
   currentThemeIdx = idx;
   const t = THEMES[idx];
   Object.assign(C, t);
-  // Refresh derived color arrays so they stay in sync with the new theme
   menuColors[0]=C.teal; menuColors[1]=C.blue; menuColors[2]=C.green; menuColors[3]=C.purple;
   diffColors[0]=C.green; diffColors[1]=C.teal; diffColors[2]=C.amber; diffColors[3]=C.red;
   multiColors[0]=C.teal; multiColors[1]=C.blue; multiColors[2]=C.purple;
@@ -618,7 +616,6 @@ const diffButtons    = [button("EASY",180,160,240,60),button("MEDIUM",180,240,24
 const multiButtons   = [button("2 PLAYER MODE",150,200,300,60),button("4 PLAYER MODE",150,290,300,60),button("BACK",150,380,300,60)];
 const hostJoinButtons= [button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
-// FIX: Use mutable arrays (not const with inline C references) so applyTheme can update them
 const menuColors  = [C.teal,C.blue,C.green,C.purple];
 const diffColors  = [C.green,C.teal,C.amber,C.red,C.dim+"ff"];
 const multiColors = [C.teal,C.blue,C.purple];
@@ -626,8 +623,16 @@ const hjColors    = [C.teal,C.blue,C.purple];
 const PLAYER_COLORS = [C.teal, C.purple, C.amber, C.blue];
 const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
 
-// ── SINGLE MOUSEDOWN LISTENER (merged) ───────────────────────────────────────
-// FIX: Was two separate mousedown listeners; merged into one to prevent double-firing
+// ── NETWORK: Rate-limited send state ─────────────────────────────────────────
+// FIX: Rate-limit sends to ~10 per second to prevent lag from network flooding
+let lastSendTime = 0;
+const SEND_INTERVAL_MS = 100; // 10x/sec max
+
+// FIX: Track last sent row count to avoid sending rows when nothing changed
+let lastSentRowCount = -1;
+let lastSentFallingText = null;
+
+// ── SINGLE MOUSEDOWN LISTENER ─────────────────────────────────────────────────
 document.addEventListener("mousedown",(e)=>{
   const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(W/rect.width);
@@ -671,7 +676,6 @@ document.addEventListener("mousedown",(e)=>{
     return;
   }
 
-  // FIX: gameover_multi click handling moved here from the second listener
   if(state==="gameover_multi"){
     if(mx>80&&mx<300&&my>532&&my<576){
       sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200); return;
@@ -813,7 +817,6 @@ async function hostGame(){
   myPeer.on("error", (e)=> console.warn("PeerJS host error:", e));
 }
 
-// FIX: joinError state tracked as an object to avoid brittle string comparison
 let joinInput="", joinErrorMsg="", joinConnecting=false;
 
 function joinGame(){ joinInput=""; joinErrorMsg=""; joinConnecting=false; state="joingame"; }
@@ -850,7 +853,6 @@ async function submitJoinCode(){
     console.warn("PeerJS join error:", e);
   });
 
-  // FIX: Timeout uses joinConnecting flag instead of string comparison
   setTimeout(()=>{ if(joinConnecting){ joinConnecting=false; joinErrorMsg="TIMEOUT - CHECK CODE"; sfxMiss(); } }, 8000);
 }
 
@@ -908,45 +910,102 @@ function isOnlineConnected(){
   return myPeer && myPeer.open;
 }
 
-// ── ONLINE GAME STATE SYNC ────────────────────────────────────────────────────
+// ── ONLINE GAME STATE SYNC (LAG-FIXED) ───────────────────────────────────────
 let isOnlineGame = false;
+let localPlayerIdx = 0;
 
-// FIX: sendGameState now correctly identifies which player is "me" vs opponent
-// rather than always assuming players[0] is the local player
-let localPlayerIdx = 0; // set in startGame for online mode
-
+// FIX 1: Rate-limited sendGameState — max 10 sends/sec
+// FIX 2: Only send rows when row count changes (event-based)
+// FIX 3: Only send falling word text+col when a new word spawns; skip y position updates
 function sendGameState(){
   if(!isOnlineGame) return;
+
+  // Rate limit: send at most every 100ms (10x/sec)
+  const now = Date.now();
+  if(now - lastSendTime < SEND_INTERVAL_MS) return;
+  lastSendTime = now;
+
   const me = players[localPlayerIdx];
   if(!me) return;
+
+  // Only send rows if the count changed
+  const rowsChanged = me.rows.length !== lastSentRowCount;
+  if(rowsChanged) lastSentRowCount = me.rows.length;
+
+  // Only send falling word info if it's a new word (text changed)
+  const currentFallingText = me.falling ? me.falling.text : null;
+  const fallingChanged = currentFallingText !== lastSentFallingText;
+  if(fallingChanged) lastSentFallingText = currentFallingText;
+
+  // Build minimal payload — skip unchanged data
   const data = {
     type: "gamestate",
     score: me.score,
     combo: me.combo,
     dead: me.dead,
-    rows: me.rows,
-    falling: me.falling ? { text: me.falling.text, col: me.falling.col, y: me.falling.y } : null,
   };
+
+  // Only include rows when changed
+  if(rowsChanged){
+    data.rows = me.rows;
+  }
+
+  // Only include falling word when it changes (new word spawned or cleared)
+  if(fallingChanged){
+    if(me.falling){
+      // Send text + col so remote can start animating from top
+      data.falling = {
+        text: me.falling.text,
+        col: me.falling.col,
+        speed: me.falling.speed,
+        // Send y only on spawn (it'll be near top), remote animates locally after
+        y: me.falling.y,
+      };
+    } else {
+      data.falling = null;
+    }
+    data.fallingChanged = true;
+  }
+
   if(hostConn){ try{ hostConn.send(data); }catch(e){} }
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
+// FIX 3: Remote falling word is animated locally — no y-position overrides after spawn
 function onGameMsg(data){
   if(data.type !== "gamestate") return;
-  // FIX: opponent index is whichever player is NOT the local player
   const oppIdx = localPlayerIdx === 0 ? 1 : 0;
   const opp = players[oppIdx];
   if(!opp) return;
+
   opp.score = data.score;
   opp.combo = data.combo;
   opp.dead  = data.dead;
-  opp.rows  = data.rows || [];
-  if(data.falling){
-    opp.falling = { text: data.falling.text, col: data.falling.col,
-                    y: data.falling.y, speed: 0 };
-  } else {
-    opp.falling = null;
+
+  // Only update rows if the host sent them (means they changed)
+  if(data.rows !== undefined){
+    opp.rows = data.rows;
   }
+
+  // Only update falling word when a new one spawns or clears
+  if(data.fallingChanged){
+    if(data.falling){
+      // New word — set it up and let local physics animate it smoothly
+      opp.falling = {
+        text: data.falling.text,
+        col: data.falling.col,
+        y: data.falling.y,
+        // Use received speed for accuracy, or fallback to default
+        speed: data.falling.speed || 2.5,
+      };
+    } else {
+      // Word was destroyed/landed
+      opp.falling = null;
+    }
+  }
+  // NOTE: If fallingChanged is NOT set, we do NOT touch opp.falling at all.
+  // The local canvas animates the remote falling word smoothly between updates.
+
   if(opp.dead && !players[localPlayerIdx].dead){
     setTimeout(()=>{ state="gameover_multi"; }, 1000);
   }
@@ -973,7 +1032,6 @@ function startGame(diff, numPlayers){
   state = "game"; difficulty = diff; playerCount = numPlayers || 1;
   paused = false;
   isOnlineGame = (numPlayers === 2 && isOnlineConnected());
-  // FIX: set localPlayerIdx — host is always index 0, joiner is index 1
   localPlayerIdx = (lobby.role === "join") ? 1 : 0;
   resetAll();
   if(isOnlineGame && players.length >= 2){
@@ -990,7 +1048,6 @@ function resetAll(){
   singleLastEscDanger=-1; singleEscFlashTimer=0; singleSpawnTimer=0; singleParticles=[];
   singleTotalKeys=0; singleCorrectWords=0; singleWrongSubmits=0;
   singleGameStartTime=Date.now(); singlePausedMs=0; singlePauseStartTime=0;
-  // FIX: pickNextWord requires difficulty to be set — it is set in startGame before resetAll
   singleNextWord = difficulty ? pickNextWord() : null;
   players = [];
   for(let i=0; i<playerCount; i++){
@@ -998,8 +1055,11 @@ function resetAll(){
     players.push(makePlayerState(i, PLAYER_COLORS[i], pname, null));
   }
   activeTypingPlayer = 0;
-  // FIX: reset lastStanding on every new game
   lastStanding = null; lastStandingTimer = 0;
+  // Reset network send tracking
+  lastSendTime = 0;
+  lastSentRowCount = -1;
+  lastSentFallingText = null;
 }
 
 // ── SPAWN ─────────────────────────────────────────────────────────────────────
@@ -1386,7 +1446,6 @@ function game(){
   pxDraw("TYPE>",16,683,"#2a4a6a",11,false); pxDraw(paused?"":singleTyped+"_",82,683,C.teal,13,Math.floor(Date.now()/400)%2===0);
   if(username){ ctx.font=`7px ${PX}`; pxDraw(username.toUpperCase(),W-14-ctx.measureText(username.toUpperCase()).width,683,C.purple,7,true); }
 
-  // Pause button
   const pb=PAUSE_BTN_SP, phov=pauseBtnHovered, pclr=paused?C.amber:C.teal;
   ctx.fillStyle=phov||paused?"rgba(255,200,0,0.12)":"rgba(0,0,0,0.55)"; ctx.fillRect(pb.x,pb.y,pb.w,pb.h);
   ctx.strokeStyle=paused?C.amber:(phov?C.teal:"rgba(0,229,204,0.4)"); ctx.lineWidth=2; ctx.strokeRect(pb.x,pb.y,pb.w,pb.h);
@@ -1410,7 +1469,6 @@ function game(){
     pxDraw(lbl,tx2,ty2,pclr,7,false);
   }
 
-  // Pause overlay
   if(paused){
     ctx.fillStyle="rgba(0,0,0,0.65)"; ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#05050f"; ctx.fillRect(100,220,400,290);
@@ -1461,6 +1519,18 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
       const src2 = avail2.length>0?avail2:pool2;
       p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: pTop, speed };
       p.spawnTimer = 0;
+    }
+  } else {
+    // FIX: Remote pane — animate falling word locally using local physics
+    // The word position is only synced on spawn, not every frame
+    if(p.falling){
+      p.falling.y += p.falling.speed;
+      const limit = pBottom - p.rows.length * pRowH;
+      if(p.falling.y >= limit){
+        // Word landed on remote side — just remove it locally
+        // The actual row state will be synced via the next gamestate packet
+        p.falling = null;
+      }
     }
   }
 
@@ -1585,7 +1655,6 @@ function game2P(){
   ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H);
   ctx.fillStyle=C.dim; ctx.fillRect(W/2-1,0,2,H);
 
-  // FIX: localPlayerIdx determines which pane is "me" and which is remote
   const meIdx = localPlayerIdx;
   const oppIdx = meIdx === 0 ? 1 : 0;
   drawPane(players[meIdx],  0,     0, pw, ph, pCols2, pRowH2, activeTypingPlayer===meIdx,  false);
@@ -1613,29 +1682,22 @@ function game4P(){
   checkMultiGameOver();
 }
 
-// FIX: checkMultiGameOver rewritten with clear, correct logic
-// lastStanding is used and rendered in the winner screen
 let lastStanding = null, lastStandingTimer = 0;
 
 function checkMultiGameOver(){
   const alive = players.filter(p=>!p.dead);
   if(alive.length === 0){
-    // Everyone died simultaneously
     state = "gameover_multi";
     return;
   }
   if(alive.length === 1 && players.length > 1){
-    // One player remains — show winner briefly then go to game over
     if(!lastStanding){
       lastStanding = alive[0];
-      lastStandingTimer = 180; // ~3 seconds at 60fps
+      lastStandingTimer = 180;
     }
   }
-  // Count down and transition
   if(lastStanding){
     lastStandingTimer--;
-    // Draw "WINNER!" overlay on the winning pane
-    // (This is just a flag; actual rendering happens inside drawPane via p.dead checks)
     if(lastStandingTimer <= 0){
       state = "gameover_multi";
     }
@@ -1649,7 +1711,6 @@ function gameover_multi(){
   ctx.strokeStyle=C.purple; ctx.shadowColor=C.purple; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(80,180,440,360); ctx.shadowBlur=0;
   ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(82,182,436,20);
 
-  // FIX: Show winner name if there was a last standing player
   if(lastStanding){
     centered("WINNER!",230,C.green,20,true);
     ctx.font=`12px ${PX}`; const nw=ctx.measureText(lastStanding.name).width;
@@ -1747,7 +1808,6 @@ function drawJoinGame(){
   pxDraw("ENTER CODE:",100,290,"#aabbcc",10,false);
   const tbx=80,tby=305,tbw=440,tbh=60;
   ctx.fillStyle="rgba(0,5,20,0.9)"; ctx.fillRect(tbx,tby,tbw,tbh);
-  // FIX: use joinErrorMsg instead of joinError
   const tbBC=(joinErrorMsg&&!joinConnecting)?C.red:joinConnecting?C.amber:C.teal;
   ctx.strokeStyle=tbBC; ctx.lineWidth=2; ctx.strokeRect(tbx,tby,tbw,tbh);
   const s=6; ctx.fillStyle=tbBC;
@@ -1875,7 +1935,6 @@ function confirmUsername(){
 let lastState="";
 
 // ── HOW TO PLAY ───────────────────────────────────────────────────────────────
-// FIX: howToPlayPage reset to 0 when accessing from menu (handled in all nav paths)
 let howToPlayPage = 0;
 const HTP_PAGES = 3;
 
