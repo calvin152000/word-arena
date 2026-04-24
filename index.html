@@ -489,6 +489,51 @@ const DIFF_CFG = {
   difficult: { baseSpeed:4.2, rand:1.5, pts:25, spawnBase:75  },
 };
 
+// ── MULTIPLAYER: mixed word pool, score-based word length progression ─────────
+const WORDS_MULTI = [
+  ...WORDS.easy.map(w=>({w, tier:0})),
+  ...WORDS.medium.map(w=>({w, tier:1})),
+  ...WORDS.hard.map(w=>({w, tier:2})),
+  ...WORDS.difficult.map(w=>({w, tier:3})),
+];
+
+// Returns a word from the mixed pool weighted toward longer words as score rises
+function getMultiWord(score, activeSet){
+  // Tier weights by score: early game = easy, late game = all mixed
+  let weights;
+  if(score < 30)       weights = [0.75, 0.20, 0.05, 0.00];
+  else if(score < 80)  weights = [0.45, 0.35, 0.15, 0.05];
+  else if(score < 160) weights = [0.20, 0.35, 0.30, 0.15];
+  else if(score < 280) weights = [0.05, 0.20, 0.40, 0.35];
+  else                 weights = [0.02, 0.10, 0.33, 0.55];
+
+  // Build filtered candidate list
+  const available = WORDS_MULTI.filter(({w}) => !activeSet.has(w));
+  const pool = available.length > 0 ? available : WORDS_MULTI;
+
+  // Weighted random pick
+  const roll = Math.random();
+  let cumulative = 0;
+  for(let tier = 0; tier < 4; tier++){
+    cumulative += weights[tier];
+    if(roll < cumulative){
+      const tierWords = pool.filter(({tier:t}) => t === tier);
+      const src = tierWords.length > 0 ? tierWords : pool;
+      return src[Math.floor(Math.random() * src.length)].w;
+    }
+  }
+  return pool[Math.floor(Math.random() * pool.length)].w;
+}
+
+// Points per word in multi: based on word length, not tier
+function getMultiPts(word, combo, danger){
+  const base = Math.max(5, word.length * 3);
+  return Math.round(base * (1 + combo * 0.1) * (1 + danger * 0.2));
+}
+
+// Speed config for multiplayer — starts gentle, ramps aggressively
+const MULTI_CFG = { baseSpeed:1.6, rand:0.5, spawnBase:130 };
+
 function getEscalation(sc){
   if(sc >= 300) return { mult:2.8, danger:4, label:"INSANE!" };
   if(sc >= 200) return { mult:2.2, danger:3, label:"DANGER!" };
@@ -782,20 +827,6 @@ document.addEventListener("mousedown",(e)=>{
       if(lobby.role==="host") checkAllReady();
       return;
     }
-
-    // Difficulty selector (host only)
-    if(lobby.role==="host" && !countdownActive){
-      const diffs=["easy","medium","hard","difficult"];
-      const labels=["EASY","MED","HARD","DIFF"];
-      diffs.forEach((d,i)=>{
-        const bx=42+i*130, by=420, bw=118, bh=38;
-        if(mx>bx&&mx<bx+bw&&my>by&&my<by+bh){
-          lobby.diff=d;
-          broadcastLobby({type:"diffchange",diff:d});
-          sfxClick();
-        }
-      });
-    }
   } else if(state==="options"){
     if(mx>150&&mx<450&&my>210&&my<275){
       soundEnabled=!soundEnabled; applyMuteState();
@@ -977,9 +1008,6 @@ function onLobbyMsg(data, fromConn){
     lobbyReadyCount = data.readyCount;
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
 
-  } else if(type==="diffchange"){
-    lobby.diff = data.diff;
-
   } else if(type==="countdown"){
     // Host is broadcasting countdown ticks
     countdownActive = true;
@@ -990,7 +1018,7 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="start"){
     // Legacy fallback
-    if(lobby.role==="join") startGame(data.diff||"medium", lobby.required);
+    if(lobby.role==="join") startGame("multi", lobby.required);
 
   } else if(type==="leave"){
     delete lobbyPeers[from];
@@ -1021,19 +1049,19 @@ let countdownInterval = null;
 function startCountdown(){
   countdownActive = true;
   countdownValue = 3;
-  countdownDiff = lobby.diff;
+  countdownDiff = "multi"; // always mixed mode in multiplayer
   sfxCountdownBeep();
-  broadcastLobby({ type:"countdown", value:3, diff:lobby.diff });
+  broadcastLobby({ type:"countdown", value:3, diff:"multi" });
   countdownInterval = setInterval(()=>{
     countdownValue--;
     if(countdownValue > 0){
       sfxCountdownBeep();
-      broadcastLobby({ type:"countdown", value:countdownValue, diff:lobby.diff });
+      broadcastLobby({ type:"countdown", value:countdownValue, diff:"multi" });
     } else {
       clearInterval(countdownInterval); countdownInterval = null;
       sfxCountdownGo();
-      broadcastLobby({ type:"countdown", value:0, diff:lobby.diff });
-      setTimeout(()=>startGame(lobby.diff, lobby.required), 200);
+      broadcastLobby({ type:"countdown", value:0, diff:"multi" });
+      setTimeout(()=>startGame("multi", lobby.required), 200);
     }
   }, 1000);
 }
@@ -1346,21 +1374,17 @@ function singleSubmit(){
 function multiSubmit(p){
   const val = p.typed.toUpperCase();
   if(p.falling && val===p.falling.text){
-    const cfg=DIFF_CFG[difficulty]||DIFF_CFG.easy;
     const esc=getEscalation(p.score);
-    const pts=Math.round(cfg.pts*(1+p.combo*0.1)*(1+esc.danger*0.2));
+    const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++;
-    // Bug6: use actual falling word position for particles
     spawnParticles(p.particles, p.falling.x ?? 40, p.falling.y, p.color, 10);
     p.combo>2?sfxCombo():sfxDestroy(); p.falling=null; p.spawnTimer=0; p.typed=""; return;
   }
   const i=p.rows.findIndex(r=>r.text===val);
   if(i!==-1){
-    const cfg=DIFF_CFG[difficulty]||DIFF_CFG.easy;
     const esc=getEscalation(p.score);
-    const pts=Math.round(cfg.pts*(1+p.combo*0.1)*(1+esc.danger*0.2));
+    const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++; p.rows.splice(i,1); p.combo>2?sfxCombo():sfxDestroy();
-    // Bug6: use row's col position for particles (rough estimate)
     spawnParticles(p.particles, 40 + (p.id||0) * 10, 300, p.color, 8);
   } else { p.combo=0; sfxMiss(); }
   p.typed="";
@@ -1581,29 +1605,17 @@ function lobbyWait(){
   const allRdy = lobbyReadyCount>=lobby.required && lobby.players>=lobby.required;
   pxDraw(rcTxt,W/2-rcw/2,rcY+24,allRdy?C.green:C.amber,9,allRdy);
 
-  // Difficulty picker (host only, only when not counting down)
+  // Mixed mode label (no difficulty picker in multiplayer)
   const diffY = rcY + 46;
   ctx.fillStyle="#070720"; ctx.fillRect(40,diffY,520,46); ctx.strokeStyle=C.dim; ctx.lineWidth=1; ctx.strokeRect(40,diffY,520,46);
-  pxDraw("DIFFICULTY:",56,diffY+18,"#6677aa",7,false);
-  if(lobby.role==="host"){
-    pxDraw("(HOST ONLY)",56,diffY+34,"#334455",6,false);
-  }
-  const diffs=["easy","medium","hard","difficult"];
-  const diffLabels=["EASY","MED","HARD","DIFF"];
-  const diffClrs=[C.green,C.teal,C.amber,C.red];
-  diffs.forEach((d,i)=>{
-    const bx=160+i*92, by=diffY+4, bw=84, bh=36;
-    const isSelected=lobby.diff===d;
-    const canClick=lobby.role==="host"&&!countdownActive;
-    ctx.fillStyle=isSelected?`rgba(${hexRgb(diffClrs[i])},0.22)`:"rgba(10,10,25,0.8)";
-    ctx.fillRect(bx,by,bw,bh);
-    ctx.strokeStyle=isSelected?diffClrs[i]:`rgba(${hexRgb(diffClrs[i])},0.3)`;
-    if(isSelected){ ctx.shadowColor=diffClrs[i]; ctx.shadowBlur=8; }
-    ctx.lineWidth=isSelected?2:1; ctx.strokeRect(bx,by,bw,bh); ctx.shadowBlur=0;
-    ctx.font=`7px ${PX}`; const dlw=ctx.measureText(diffLabels[i]).width;
-    ctx.fillStyle=isSelected?diffClrs[i]:canClick?`rgba(${hexRgb(diffClrs[i])},0.5)`:"#334455";
-    ctx.fillText(diffLabels[i],bx+(bw-dlw)/2,by+23);
-  });
+  ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.12)`; ctx.fillRect(40,diffY,520,46);
+  ctx.font=`8px ${PX}`; const mlbl="★ MIXED MODE — ALL DIFFICULTIES COMBINED ★";
+  const mlw=ctx.measureText(mlbl).width;
+  ctx.shadowColor=C.purple; ctx.shadowBlur=8; ctx.fillStyle=C.purple;
+  ctx.fillText(mlbl, W/2-mlw/2, diffY+20); ctx.shadowBlur=0;
+  ctx.font=`7px ${PX}`; const msub="Words get harder as your score rises!";
+  const mslw=ctx.measureText(msub).width;
+  ctx.fillStyle="#556677"; ctx.fillText(msub, W/2-mslw/2, diffY+36);
 
   // READY button
   const readyBtn={x:150,y:diffY+56,w:300,h:52};
@@ -1647,10 +1659,8 @@ function lobbyWait(){
     ctx.shadowColor=C.amber; ctx.shadowBlur=30*pulse; ctx.fillStyle=C.amber;
     ctx.fillText(numStr,W/2-nw/2,370); ctx.shadowBlur=0;
     // Diff label
-    const diffStr=(countdownDiff||"medium").toUpperCase();
-    ctx.font=`8px ${PX}`; const dw=ctx.measureText(diffStr).width;
-    const dc=[C.green,C.teal,C.amber,C.red][["easy","medium","hard","difficult"].indexOf(countdownDiff)]||C.teal;
-    pxDraw(diffStr,W/2-dw/2,418,dc,8,true);
+    ctx.font=`8px ${PX}`; const dw=ctx.measureText("MIXED MODE").width;
+    pxDraw("MIXED MODE",W/2-dw/2,418,C.purple,8,true);
     centered("GET READY TO TYPE!",448,"#6677aa",7,false);
   }
 }
@@ -1788,7 +1798,8 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   ctx.save();
   ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
 
-  const cfg = DIFF_CFG[difficulty]||DIFF_CFG.easy;
+  const isMulti = playerCount > 1;
+  const cfg = isMulti ? MULTI_CFG : (DIFF_CFG[difficulty]||DIFF_CFG.easy);
   const esc = getEscalation(p.score);
 
   if(esc.danger > p.lastEscDanger){
@@ -1808,12 +1819,18 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
       const esc2 = getEscalation(p.score);
       const speed = (cfg.baseSpeed + Math.random()*cfg.rand) * esc2.mult;
       const col = Math.floor(Math.random() * pCols.length);
-      const pool2 = WORDS[difficulty]||WORDS.easy;
       const activeSet = new Set(p.rows.map(r=>r.text));
       if(p.falling) activeSet.add(p.falling.text);
-      const avail2 = pool2.filter(w=>!activeSet.has(w));
-      const src2 = avail2.length>0?avail2:pool2;
-      p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: 0, speed };
+      let wordText;
+      if(isMulti){
+        wordText = getMultiWord(p.score, activeSet);
+      } else {
+        const pool2 = WORDS[difficulty]||WORDS.easy;
+        const avail2 = pool2.filter(w=>!activeSet.has(w));
+        const src2 = avail2.length>0?avail2:pool2;
+        wordText = src2[Math.floor(Math.random()*src2.length)];
+      }
+      p.falling = { text: wordText, col, y: 0, speed };
       p.spawnTimer = 0;
     }
     // Advance local falling word physics (y = pane-relative)
@@ -1855,7 +1872,15 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     const fx = px + pCols[p.falling.col % pCols.length];
     const fy = pTop + p.falling.y; // convert pane-relative → absolute canvas y
     ctx.font=`11px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
-    const wordClr=esc.danger>=3?C.red:esc.danger>=2?C.amber:p.color;
+    // In multi: color by word length (green=short, amber=medium, red=long)
+    // In single: color by danger level
+    let wordClr;
+    if(isMulti){
+      const len = p.falling.text.length;
+      wordClr = len <= 3 ? C.green : len <= 5 ? C.teal : len <= 8 ? C.amber : C.red;
+    } else {
+      wordClr = esc.danger>=3?C.red:esc.danger>=2?C.amber:p.color;
+    }
     ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,fy-18,tw+10,22);
     ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,fy-18,tw+10,22);
     pxDraw(p.falling.text,fx,fy,wordClr,11,true);
