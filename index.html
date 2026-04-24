@@ -132,11 +132,18 @@ let state = "splash";
 let difficulty = null;
 let username = "";
 let usernameInput = "";
-let usernameDone = false;
 let playerCount = 1;
 
-let lobby = { code: null, required: 2, players: 0, role: null };
+let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium" };
 let leaveLobbyConfirm = false;
+// Ready system
+let myReady = false;
+let lobbyReadyCount = 0;
+// Countdown state
+let countdownActive = false;
+let countdownValue = 3;
+let countdownTimer = 0;
+let countdownDiff = "medium";
 
 // ── AUDIO ───────────────────────────────────────────────────────────────────
 let soundEnabled = true;
@@ -232,6 +239,8 @@ function sfxPlayerJoin(){ softTone(784,0.15,0.44); setTimeout(()=>softTone(1047,
 function sfxLobbyReady(){
   [523,659,784].forEach((f,i)=>setTimeout(()=>softTone(f,0.30,0.44),i*30));
 }
+function sfxCountdownBeep(){ softTone(880, 0.18, 0.55); }
+function sfxCountdownGo(){ [523,659,784,1047].forEach((f,i)=>setTimeout(()=>softTone(f,0.28,0.60),i*55)); }
 
 let hoveredBtn = null;
 c.addEventListener("mousemove",(e)=>{
@@ -474,10 +483,10 @@ const WORDS = {
 };
 
 const DIFF_CFG = {
-  easy:      { baseSpeed:1.8, rand:0.6, pts:5,  spawnBase:140, spawnRand:50 },
-  medium:    { baseSpeed:2.4, rand:0.9, pts:10, spawnBase:115, spawnRand:45 },
-  hard:      { baseSpeed:3.2, rand:1.1, pts:15, spawnBase:95,  spawnRand:35 },
-  difficult: { baseSpeed:4.2, rand:1.5, pts:25, spawnBase:75,  spawnRand:30 },
+  easy:      { baseSpeed:1.8, rand:0.6, pts:5,  spawnBase:140 },
+  medium:    { baseSpeed:2.4, rand:0.9, pts:10, spawnBase:115 },
+  hard:      { baseSpeed:3.2, rand:1.1, pts:15, spawnBase:95  },
+  difficult: { baseSpeed:4.2, rand:1.5, pts:25, spawnBase:75  },
 };
 
 function getEscalation(sc){
@@ -548,7 +557,7 @@ function applyTheme(idx){
   const t = THEMES[idx];
   Object.assign(C, t);
   menuColors[0]=C.teal; menuColors[1]=C.blue; menuColors[2]=C.green; menuColors[3]=C.purple;
-  diffColors[0]=C.green; diffColors[1]=C.teal; diffColors[2]=C.amber; diffColors[3]=C.red;
+  diffColors[0]=C.green; diffColors[1]=C.teal; diffColors[2]=C.amber; diffColors[3]=C.red; diffColors[4]="#334466";
   multiColors[0]=C.teal; multiColors[1]=C.blue; multiColors[2]=C.purple;
   hjColors[0]=C.teal; hjColors[1]=C.blue; hjColors[2]=C.purple;
   PLAYER_COLORS[0]=C.teal; PLAYER_COLORS[1]=C.purple; PLAYER_COLORS[2]=C.amber; PLAYER_COLORS[3]=C.blue;
@@ -573,6 +582,7 @@ let singleSpawnTimer = 0, singleParticles = [];
 
 let scanY = 0, frameN = 0;
 let paused = false;
+let multiForfeitConfirm = false; // multiplayer forfeit confirm overlay
 let lastMouseX = 0, lastMouseY = 0;
 
 const PAUSE_BTN_SP = {x: W-100, y: 6, w: 44, h: 44};
@@ -617,7 +627,7 @@ const multiButtons   = [button("2 PLAYER MODE",150,200,300,60),button("4 PLAYER 
 const hostJoinButtons= [button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
 const menuColors  = [C.teal,C.blue,C.green,C.purple];
-const diffColors  = [C.green,C.teal,C.amber,C.red,C.dim+"ff"];
+const diffColors  = [C.green,C.teal,C.amber,C.red,"#334466"];
 const multiColors = [C.teal,C.blue,C.purple];
 const hjColors    = [C.teal,C.blue,C.purple];
 const PLAYER_COLORS = [C.teal, C.purple, C.amber, C.blue];
@@ -676,6 +686,22 @@ document.addEventListener("mousedown",(e)=>{
     return;
   }
 
+  // Multiplayer forfeit confirm overlay
+  if(state==="game" && playerCount>1 && multiForfeitConfirm){
+    const yes={x:148,y:316,w:130,h:50}, no={x:322,y:316,w:130,h:50};
+    if(hit(yes,mx,my)){
+      // Mark local player as dead (forfeit)
+      const me = isOnlineGame ? players[localPlayerIdx] : players[activeTypingPlayer];
+      if(me) me.dead = true;
+      multiForfeitConfirm = false;
+      bgmGain.gain.linearRampToValueAtTime(soundEnabled?0.18:0, audioCtx.currentTime+0.15);
+      sfxMiss();
+      return;
+    }
+    if(hit(no,mx,my)){ multiForfeitConfirm=false; bgmGain.gain.linearRampToValueAtTime(soundEnabled?0.18:0,audioCtx.currentTime+0.15); sfxClick(); return; }
+    return;
+  }
+
   if(state==="gameover_multi"){
     if(mx>80&&mx<300&&my>532&&my<576){
       sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200); return;
@@ -689,7 +715,10 @@ document.addEventListener("mousedown",(e)=>{
 
   if(leaveLobbyConfirm && state==="lobby_wait"){
     const yes={x:160,y:345,w:120,h:50},no={x:320,y:345,w:120,h:50};
-    if(hit(yes,mx,my)){ leaveLobbyChannel(); state="menu"; lobby.code=null; lobby.players=0; lobby.role=null; leaveLobbyConfirm=false; startBGM("menu"); }
+    if(hit(yes,mx,my)){
+      leaveLobbyChannel(); state="menu"; lobby.code=null; lobby.players=0; lobby.role=null;
+      leaveLobbyConfirm=false; startBGM("menu");
+    }
     if(hit(no, mx,my)){ leaveLobbyConfirm=false; }
     return;
   }
@@ -740,8 +769,33 @@ document.addEventListener("mousedown",(e)=>{
       }
     });
   } else if(state==="lobby_wait"){
-    const b={x:200,y:550,w:200,h:60};
-    if(hit(b,mx,my)) leaveLobbyConfirm=true;
+    const backBtn={x:200,y:548,w:200,h:52};
+    if(hit(backBtn,mx,my)){ leaveLobbyConfirm=true; sfxClick(); return; }
+
+    // READY / UNREADY button
+    const readyBtn={x:150,y:470,w:300,h:52};
+    if(hit(readyBtn,mx,my) && !countdownActive){
+      myReady = !myReady;
+      lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+      broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
+      if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
+      if(lobby.role==="host") checkAllReady();
+      return;
+    }
+
+    // Difficulty selector (host only)
+    if(lobby.role==="host" && !countdownActive){
+      const diffs=["easy","medium","hard","difficult"];
+      const labels=["EASY","MED","HARD","DIFF"];
+      diffs.forEach((d,i)=>{
+        const bx=42+i*130, by=420, bw=118, bh=38;
+        if(mx>bx&&mx<bx+bw&&my>by&&my<by+bh){
+          lobby.diff=d;
+          broadcastLobby({type:"diffchange",diff:d});
+          sfxClick();
+        }
+      });
+    }
   } else if(state==="options"){
     if(mx>150&&mx<450&&my>210&&my<275){
       soundEnabled=!soundEnabled; applyMuteState();
@@ -765,14 +819,23 @@ document.addEventListener("mousedown",(e)=>{
   }
 
   if(state==="game" && playerCount > 1){
-    const paneW = W / 2;
     if(playerCount === 2){
+      const paneW = W / 2;
       if(mx < paneW) activeTypingPlayer = 0;
       else activeTypingPlayer = 1;
     } else {
-      const col = mx < paneW ? 0 : 1;
-      const row = my < H/2 ? 0 : 1;
-      activeTypingPlayer = row * 2 + col;
+      // 4P POV layout: left 62% = main pane (focus player), right 38% = 3 mini panes
+      const DIVX = Math.round(W * 0.62);
+      if(mx < DIVX){
+        // Clicked main pane — no switch needed, already showing focus player
+      } else {
+        // Clicked one of the 3 mini panes on the right — switch POV to that player
+        const focus = activeTypingPlayer;
+        const opponents = [0,1,2,3].filter(i => i !== focus);
+        const sph = Math.floor(H / 3);
+        const slot = Math.min(2, Math.floor(my / sph));
+        activeTypingPlayer = opponents[slot];
+      }
     }
   }
 });
@@ -792,8 +855,11 @@ async function hostGame(){
   lobby.code = generateCode();
   lobby.players = 1;
   lobby.role = "host";
+  lobby.diff = "medium";
   lobbyPeers = {};
-  lobbyPeers[myPlayerId] = { name: username||"HOST", ready:true };
+  myReady = false;
+  lobbyReadyCount = 0;
+  countdownActive = false; countdownValue = 3;
   state = "lobby_wait";
 
   if(myPeer){ myPeer.destroy(); }
@@ -807,10 +873,15 @@ async function hostGame(){
           else onLobbyMsg(data, conn);
         });
         conn.send({ type:"welcome", from:myPlayerId, name:username||"HOST",
-                    peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name})) });
+                    diff: lobby.diff,
+                    hostReady: myReady,
+                    peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false})) });
       });
       conn.on("close", ()=>{
         guestConns = guestConns.filter(c=>c!==conn);
+        lobby.players = 1 + guestConns.length;
+        lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+        if(countdownActive){ countdownActive=false; if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; } sfxMiss(); }
       });
     });
   });
@@ -829,7 +900,9 @@ async function submitJoinCode(){
   lobby.code = val;
   lobby.role = "join";
   lobbyPeers = {};
-  lobbyPeers[myPlayerId] = { name: username||"P2", ready:true };
+  myReady = false;
+  lobbyReadyCount = 0;
+  countdownActive = false; countdownValue = 3;
 
   if(myPeer){ myPeer.destroy(); }
   myPeer = new Peer();
@@ -860,30 +933,71 @@ function onLobbyMsg(data, fromConn){
   const { type, from, name, peers } = data;
 
   if(type==="welcome"){
-    if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:true}; });
-    lobbyPeers[from] = { name:name||"HOST", ready:true };
+    if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:false}; });
+    lobbyPeers[from] = { name:name||"HOST", ready:data.hostReady||false };
     lobby.players = Object.keys(lobbyPeers).length;
+    lobby.diff = data.diff || "medium";
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     sfxPlayerJoin();
 
   } else if(type==="join"){
     if(!lobbyPeers[from]) sfxPlayerJoin();
-    lobbyPeers[from] = { name:name||from, ready:true };
+    lobbyPeers[from] = { name:name||from, ready:false };
     lobby.players = Object.keys(lobbyPeers).length;
-    broadcastLobby({ type:"joined", from, name, total:lobby.players });
-    if(lobby.players >= lobby.required){ sfxLobbyReady(); checkLobbyStart(); }
+    // host sends full peer list update back to everyone
+    broadcastLobby({ type:"joined", from, name, total:lobby.players, diff:lobby.diff,
+      peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready})) });
 
   } else if(type==="joined"){
-    if(!lobbyPeers[from]) lobbyPeers[from] = { name:name||from, ready:true };
+    // update full peer list
+    if(data.peers){
+      data.peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
+    } else if(!lobbyPeers[from]){
+      lobbyPeers[from] = { name:name||from, ready:false };
+    }
     lobby.players = data.total || Object.keys(lobbyPeers).length;
+    lobby.diff = data.diff || lobby.diff;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     sfxPlayerJoin();
-    if(lobby.players >= lobby.required) sfxLobbyReady();
+
+  } else if(type==="ready"){
+    if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    if(data.isReady) sfxPlayerJoin(); else sfxBack();
+    // host checks if all ready
+    if(lobby.role==="host") checkAllReady();
+    // broadcast updated ready state to others
+    if(lobby.role==="host"){
+      broadcastLobby({ type:"readystate", from, isReady:data.isReady,
+        readyCount: lobbyReadyCount, total: lobby.players });
+    }
+
+  } else if(type==="readystate"){
+    if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
+    lobbyReadyCount = data.readyCount;
+    if(data.isReady) sfxPlayerJoin(); else sfxBack();
+
+  } else if(type==="diffchange"){
+    lobby.diff = data.diff;
+
+  } else if(type==="countdown"){
+    // Host is broadcasting countdown ticks
+    countdownActive = true;
+    countdownValue = data.value;
+    countdownDiff = data.diff || lobby.diff;
+    if(data.value > 0) sfxCountdownBeep();
+    else { sfxCountdownGo(); startGame(countdownDiff, lobby.required); }
 
   } else if(type==="start"){
+    // Legacy fallback
     if(lobby.role==="join") startGame(data.diff||"medium", lobby.required);
 
   } else if(type==="leave"){
     delete lobbyPeers[from];
     lobby.players = Object.keys(lobbyPeers).length;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    // cancel countdown if someone leaves
+    if(countdownActive){ countdownActive=false; countdownValue=3; sfxMiss(); }
   }
 }
 
@@ -891,15 +1005,50 @@ function broadcastLobby(data){
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
-function checkLobbyStart(){
-  if(lobby.players >= lobby.required){
-    broadcastLobby({ type:"start", diff:"medium" });
-    startGame("medium", lobby.required);
+function checkAllReady(){
+  // Only host calls this
+  if(lobby.role !== "host") return;
+  const totalPlayers = lobby.players; // includes self
+  const guestReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length;
+  const allReady = myReady && guestReadyCount >= (totalPlayers - 1) && totalPlayers >= lobby.required;
+  if(allReady && !countdownActive){
+    startCountdown();
   }
+}
+
+let countdownInterval = null;
+
+function startCountdown(){
+  countdownActive = true;
+  countdownValue = 3;
+  countdownDiff = lobby.diff;
+  sfxCountdownBeep();
+  broadcastLobby({ type:"countdown", value:3, diff:lobby.diff });
+  countdownInterval = setInterval(()=>{
+    countdownValue--;
+    if(countdownValue > 0){
+      sfxCountdownBeep();
+      broadcastLobby({ type:"countdown", value:countdownValue, diff:lobby.diff });
+    } else {
+      clearInterval(countdownInterval); countdownInterval = null;
+      sfxCountdownGo();
+      broadcastLobby({ type:"countdown", value:0, diff:lobby.diff });
+      setTimeout(()=>startGame(lobby.diff, lobby.required), 200);
+    }
+  }, 1000);
+}
+
+function cancelCountdown(){
+  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+  countdownActive = false; countdownValue = 3;
+  broadcastLobby({ type:"leave", from:"__countdown_cancel__" }); // reuse leave to reset guests
 }
 
 function leaveLobbyChannel(){
   broadcastLobby({ type:"leave", from:myPlayerId });
+  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+  countdownActive=false; countdownValue=3;
+  myReady=false; lobbyReadyCount=0;
   if(hostConn){ try{ hostConn.close(); }catch(e){} hostConn=null; }
   guestConns.forEach(c=>{ try{ c.close(); }catch(e){} }); guestConns=[];
   if(myPeer){ try{ myPeer.destroy(); }catch(e){} myPeer=null; }
@@ -913,6 +1062,8 @@ function isOnlineConnected(){
 // ── ONLINE GAME STATE SYNC (LAG-FIXED) ───────────────────────────────────────
 let isOnlineGame = false;
 let localPlayerIdx = 0;
+// Bug5 fix: session ID so stale delayed packets never affect a new game/menu
+let gameSessionId = 0;
 
 // FIX 1: Rate-limited sendGameState — max 10 sends/sec
 // FIX 2: Only send rows when row count changes (event-based)
@@ -1007,7 +1158,13 @@ function onGameMsg(data){
   // The local canvas animates the remote falling word smoothly between updates.
 
   if(opp.dead && !players[localPlayerIdx].dead){
-    setTimeout(()=>{ state="gameover_multi"; }, 1000);
+    const sessionAtCall = gameSessionId;
+    setTimeout(()=>{
+      // Only fire if still in the same game session
+      if(gameSessionId === sessionAtCall && state === "game"){
+        state="gameover_multi";
+      }
+    }, 1000);
   }
 }
 
@@ -1032,7 +1189,11 @@ function startGame(diff, numPlayers){
   state = "game"; difficulty = diff; playerCount = numPlayers || 1;
   paused = false;
   isOnlineGame = (numPlayers === 2 && isOnlineConnected());
-  localPlayerIdx = (lobby.role === "join") ? 1 : 0;
+  localPlayerIdx = (isOnlineGame && lobby.role === "join") ? 1 : 0;
+  // reset lobby ready/countdown state
+  myReady = false; lobbyReadyCount = 0;
+  countdownActive = false; countdownValue = 3;
+  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
   resetAll();
   if(isOnlineGame && players.length >= 2){
     const peers = Object.entries(lobbyPeers).filter(([id])=>id!==myPlayerId);
@@ -1044,6 +1205,7 @@ function startGame(diff, numPlayers){
 }
 
 function resetAll(){
+  gameSessionId++; // Bug5: invalidate stale network callbacks from previous session
   singleRows=[]; singleFalling=null; singleTyped=""; singleScore=0; singleCombo=0;
   singleLastEscDanger=-1; singleEscFlashTimer=0; singleSpawnTimer=0; singleParticles=[];
   singleTotalKeys=0; singleCorrectWords=0; singleWrongSubmits=0;
@@ -1056,6 +1218,7 @@ function resetAll(){
   }
   activeTypingPlayer = 0;
   lastStanding = null; lastStandingTimer = 0;
+  multiForfeitConfirm = false;
   // Reset network send tracking
   lastSendTime = 0;
   lastSentRowCount = -1;
@@ -1087,6 +1250,17 @@ document.addEventListener("keydown",(e)=>{
   }
   if(!audioReady){ initAudio(); audioCtx.resume().then(()=>{ startBGM("menu"); }); }
   else if(audioCtx && audioCtx.state === "suspended"){ audioCtx.resume(); }
+
+  // SPACE = ready toggle in lobby
+  if(state==="lobby_wait" && e.key===" " && !countdownActive){
+    e.preventDefault();
+    myReady = !myReady;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
+    if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
+    if(lobby.role==="host") checkAllReady();
+    return;
+  }
 
   if(state==="howtoplay"){
     if(e.key==="Escape"||e.key==="Backspace"){ sfxBack(); state="menu"; howToPlayPage=0; return; }
@@ -1128,6 +1302,17 @@ document.addEventListener("keydown",(e)=>{
     else if(e.key==="Enter") singleSubmit();
     else if(/^[a-zA-Z]$/.test(e.key)){ singleTyped+=e.key.toUpperCase(); singleTotalKeys++; sfxType(); }
   } else {
+    // ESC opens forfeit confirm in multiplayer
+    if(e.key==="Escape"){
+      multiForfeitConfirm = !multiForfeitConfirm;
+      if(multiForfeitConfirm){
+        bgmGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime+0.15);
+      } else {
+        bgmGain.gain.linearRampToValueAtTime(soundEnabled?0.18:0, audioCtx.currentTime+0.15);
+      }
+      sfxClick(); return;
+    }
+    if(multiForfeitConfirm) return;
     const p = players[activeTypingPlayer];
     if(!p || p.dead) return;
     if(e.key==="Backspace") p.typed=p.typed.slice(0,-1);
@@ -1165,7 +1350,8 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=Math.round(cfg.pts*(1+p.combo*0.1)*(1+esc.danger*0.2));
     p.score+=pts; p.combo++;
-    spawnParticles(p.particles, 40, p.falling.y, p.color, 10);
+    // Bug6: use actual falling word position for particles
+    spawnParticles(p.particles, p.falling.x ?? 40, p.falling.y, p.color, 10);
     p.combo>2?sfxCombo():sfxDestroy(); p.falling=null; p.spawnTimer=0; p.typed=""; return;
   }
   const i=p.rows.findIndex(r=>r.text===val);
@@ -1174,7 +1360,8 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=Math.round(cfg.pts*(1+p.combo*0.1)*(1+esc.danger*0.2));
     p.score+=pts; p.combo++; p.rows.splice(i,1); p.combo>2?sfxCombo():sfxDestroy();
-    spawnParticles(p.particles, 40, 300, p.color, 8);
+    // Bug6: use row's col position for particles (rough estimate)
+    spawnParticles(p.particles, 40 + (p.id||0) * 10, 300, p.color, 8);
   } else { p.combo=0; sfxMiss(); }
   p.typed="";
 }
@@ -1316,36 +1503,118 @@ function lobbyWait(){
   ctx.fillStyle="#05051a"; ctx.fillRect(30,80,540,560);
   ctx.strokeStyle=C.teal; ctx.shadowColor=C.teal; ctx.shadowBlur=16; ctx.lineWidth=2; ctx.strokeRect(30,80,540,560); ctx.shadowBlur=0;
   [[30,80],[566,80],[30,636],[566,636]].forEach(([px2,py2])=>{ ctx.fillStyle=C.teal; ctx.fillRect(px2-1,py2-1,10,2); ctx.fillRect(px2-1,py2-1,2,10); });
-  const wt="WAITING"+dots; ctx.font=`11px ${PX}`; pxDraw(wt,W/2-ctx.measureText(wt).width/2,112,C.teal,11,true);
-  ctx.fillStyle="#070720"; ctx.fillRect(80,124,440,56); ctx.strokeStyle=C.green; ctx.lineWidth=2; ctx.strokeRect(80,124,440,56);
-  pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",168,C.green,20,true);
-  if(is4P){
-    ctx.fillStyle="#070720"; ctx.fillRect(40,192,240,110); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,192,240,110);
-    pxDraw("PLAYER 1",58,214,"#aabbcc",8,false);
-    const p1name=username?username.toUpperCase():"HOST"; pxDraw(p1name,58,236,C.teal,9,true); pxDraw("HOST",58,258,"#44ff99",8,false);
-    ctx.fillStyle=C.green; ctx.shadowColor=C.green; ctx.shadowBlur=6; ctx.beginPath(); ctx.arc(260,240,6,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
-    pxDraw("READY",186,258,C.green,7,false);
-    drawLobbyPlayerPanel(320,192,230,110,C.purple,lobby.players>=2,"PLAYER 2");
-    ctx.fillStyle="#070720"; ctx.fillRect(40,318,240,110); ctx.strokeStyle=C.dim+"ff"; ctx.lineWidth=2; ctx.strokeRect(40,318,240,110);
-    pxDraw("PLAYER 3",58,340,"#aabbcc",8,false);
-    if(lobby.players>=3){ pxDraw("JOINED",58,362,C.green,9,true); ctx.fillStyle=C.green; ctx.shadowColor=C.green; ctx.shadowBlur=6; ctx.beginPath(); ctx.arc(260,360,6,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0; }
-    else { const wdots=".".repeat(Math.floor(Date.now()/500)%4); pxDraw("WAITING"+wdots,58,362,"#334466",8,false); }
-    drawLobbyPlayerPanel(320,318,230,110,C.blue,lobby.players>=4,"PLAYER 4");
-    ctx.fillStyle="#070720"; ctx.fillRect(40,444,510,80); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,444,510,80);
-    pxDraw("PLAYERS",58,466,"#aabbcc",8,false); centered(lobby.players+" / "+lobby.required,504,C.amber,22,true);
-  } else {
-    ctx.fillStyle="#070720"; ctx.fillRect(40,192,240,140); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,192,240,140);
-    pxDraw("PLAYER 1",58,216,"#aabbcc",8,false);
-    const p1name=username?username.toUpperCase():"HOST"; pxDraw(p1name,58,240,C.teal,9,true); pxDraw("HOST",58,264,"#44ff99",8,false);
-    ctx.fillStyle=C.green; ctx.shadowColor=C.green; ctx.shadowBlur=6; ctx.beginPath(); ctx.arc(260,248,6,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0; pxDraw("READY",186,264,C.green,7,false);
-    const peers=Object.entries(lobbyPeers).filter(([id])=>id!==myPlayerId);
-    const p2label=peers.length>0?"P2: "+(peers[0][1].name||"P2"):"PLAYER 2";
-    drawLobbyPlayerPanel(320,192,230,140,C.purple,lobby.players>=2,p2label.substring(0,12));
-    ctx.fillStyle="#070720"; ctx.fillRect(40,352,510,96); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,352,510,96);
-    pxDraw("PLAYERS",58,374,"#aabbcc",8,false); centered(lobby.players+" / "+lobby.required,428,C.amber,26,true);
-  }
-  pixelBox({text:"BACK",x:200,y:548,w:200,h:52},C.red);
 
+  // Title
+  const titleTxt = countdownActive ? "GET READY!" : "LOBBY";
+  ctx.font=`11px ${PX}`; pxDraw(titleTxt,W/2-ctx.measureText(titleTxt).width/2,112,countdownActive?C.amber:C.teal,11,true);
+
+  // Room code
+  ctx.fillStyle="#070720"; ctx.fillRect(80,124,440,52); ctx.strokeStyle=C.green; ctx.lineWidth=2; ctx.strokeRect(80,124,440,52);
+  pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",165,C.green,18,true);
+
+  // Player panels
+  const peers=Object.entries(lobbyPeers);
+  const allPeers=[
+    { id:myPlayerId, name:username?username.toUpperCase():"HOST", ready:myReady, isMe:true },
+    ...peers.map(([id,p])=>({ id, name:p.name||id, ready:p.ready||false, isMe:false }))
+  ];
+  const maxShow = lobby.required;
+  const panelW=240, panelH=100, panelGap=10;
+  const totalW=Math.min(maxShow,2)*(panelW+panelGap)-panelGap;
+  const startX=(W-totalW)/2;
+
+  for(let i=0;i<maxShow;i++){
+    const col=i%2, row=Math.floor(i/2);
+    const px2=startX+col*(panelW+panelGap);
+    const py2=192+row*(panelH+panelGap);
+    const p=allPeers[i];
+    const joined=!!p;
+    const clr=PLAYER_COLORS[i]||C.teal;
+
+    // Panel bg
+    ctx.fillStyle="rgba(4,4,20,0.92)"; ctx.fillRect(px2,py2,panelW,panelH);
+    ctx.strokeStyle=joined?(p.ready?C.green:clr):`rgba(${hexRgb(clr)},0.3)`;
+    if(joined&&p.ready){ ctx.shadowColor=C.green; ctx.shadowBlur=10; }
+    ctx.lineWidth=2; ctx.strokeRect(px2,py2,panelW,panelH); ctx.shadowBlur=0;
+    // corner accents
+    const cs=6; ctx.fillStyle=joined?clr:`rgba(${hexRgb(clr)},0.3)`;
+    ctx.fillRect(px2,py2,cs,2);ctx.fillRect(px2,py2,2,cs);
+    ctx.fillRect(px2+panelW-cs,py2,cs,2);ctx.fillRect(px2+panelW-2,py2,2,cs);
+    ctx.fillRect(px2,py2+panelH-2,cs,2);ctx.fillRect(px2,py2+panelH-cs,2,cs);
+    ctx.fillRect(px2+panelW-cs,py2+panelH-2,cs,2);ctx.fillRect(px2+panelW-2,py2+panelH-cs,2,cs);
+
+    // Header bar
+    ctx.fillStyle=`rgba(${hexRgb(clr)},0.15)`; ctx.fillRect(px2,py2,panelW,24);
+    ctx.font=`7px ${PX}`; const plabel=`P${i+1}${p&&p.isMe?" (YOU)":""}`;
+    const plw=ctx.measureText(plabel).width;
+    ctx.fillStyle=clr; ctx.fillText(plabel,px2+(panelW-plw)/2,py2+16);
+
+    if(joined){
+      // Player name
+      ctx.font=`9px ${PX}`; const nw=ctx.measureText(p.name).width;
+      ctx.shadowColor=clr; ctx.shadowBlur=6; ctx.fillStyle=clr;
+      ctx.fillText(p.name,px2+(panelW-nw)/2,py2+46); ctx.shadowBlur=0;
+      // Ready status badge
+      const rdyTxt=p.ready?"✓ READY":"NOT READY";
+      const rdyClr=p.ready?C.green:"#556677";
+      ctx.font=`7px ${PX}`; const rdyw=ctx.measureText(rdyTxt).width;
+      ctx.fillStyle=p.ready?`rgba(0,200,100,0.18)`:`rgba(20,20,40,0.6)`;
+      ctx.fillRect(px2+(panelW-rdyw-16)/2,py2+56,rdyw+16,22);
+      ctx.strokeStyle=rdyClr; ctx.lineWidth=1; ctx.strokeRect(px2+(panelW-rdyw-16)/2,py2+56,rdyw+16,22);
+      if(p.ready){ ctx.shadowColor=C.green; ctx.shadowBlur=8; }
+      ctx.fillStyle=rdyClr; ctx.fillText(rdyTxt,px2+(panelW-rdyw)/2,py2+71); ctx.shadowBlur=0;
+    } else {
+      // Empty slot
+      const wdots=".".repeat(Math.floor(Date.now()/500)%4);
+      ctx.font=`8px ${PX}`; const ww=ctx.measureText("WAITING"+wdots).width;
+      ctx.fillStyle=`rgba(${hexRgb(clr)},0.35)`;
+      ctx.fillText("WAITING"+wdots,px2+(panelW-ww)/2,py2+58);
+    }
+  }
+
+  // Ready count bar
+  const rcY = is4P ? 415 : 307;
+  ctx.fillStyle="#070720"; ctx.fillRect(40,rcY,520,36); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,rcY,520,36);
+  const readyTotal = lobbyReadyCount + (myReady?0:0); // already includes myReady
+  const rcTxt=`${lobbyReadyCount} / ${lobby.players} READY`;
+  ctx.font=`9px ${PX}`; const rcw=ctx.measureText(rcTxt).width;
+  const allRdy = lobbyReadyCount>=lobby.required && lobby.players>=lobby.required;
+  pxDraw(rcTxt,W/2-rcw/2,rcY+24,allRdy?C.green:C.amber,9,allRdy);
+
+  // Difficulty picker (host only, only when not counting down)
+  const diffY = rcY + 46;
+  ctx.fillStyle="#070720"; ctx.fillRect(40,diffY,520,46); ctx.strokeStyle=C.dim; ctx.lineWidth=1; ctx.strokeRect(40,diffY,520,46);
+  pxDraw("DIFFICULTY:",56,diffY+18,"#6677aa",7,false);
+  if(lobby.role==="host"){
+    pxDraw("(HOST ONLY)",56,diffY+34,"#334455",6,false);
+  }
+  const diffs=["easy","medium","hard","difficult"];
+  const diffLabels=["EASY","MED","HARD","DIFF"];
+  const diffClrs=[C.green,C.teal,C.amber,C.red];
+  diffs.forEach((d,i)=>{
+    const bx=160+i*92, by=diffY+4, bw=84, bh=36;
+    const isSelected=lobby.diff===d;
+    const canClick=lobby.role==="host"&&!countdownActive;
+    ctx.fillStyle=isSelected?`rgba(${hexRgb(diffClrs[i])},0.22)`:"rgba(10,10,25,0.8)";
+    ctx.fillRect(bx,by,bw,bh);
+    ctx.strokeStyle=isSelected?diffClrs[i]:`rgba(${hexRgb(diffClrs[i])},0.3)`;
+    if(isSelected){ ctx.shadowColor=diffClrs[i]; ctx.shadowBlur=8; }
+    ctx.lineWidth=isSelected?2:1; ctx.strokeRect(bx,by,bw,bh); ctx.shadowBlur=0;
+    ctx.font=`7px ${PX}`; const dlw=ctx.measureText(diffLabels[i]).width;
+    ctx.fillStyle=isSelected?diffClrs[i]:canClick?`rgba(${hexRgb(diffClrs[i])},0.5)`:"#334455";
+    ctx.fillText(diffLabels[i],bx+(bw-dlw)/2,by+23);
+  });
+
+  // READY button
+  const readyBtn={x:150,y:diffY+56,w:300,h:52};
+  const rdyBtnClr=myReady?(countdownActive?C.amber:C.green):C.teal;
+  const rdyBtnHov=hit(readyBtn,lastMouseX,lastMouseY)&&!countdownActive;
+  pixelBox({text:myReady?"✓ READY! (CLICK TO UNREADY)":"PRESS SPACE / CLICK TO READY",x:readyBtn.x,y:readyBtn.y,w:readyBtn.w,h:readyBtn.h},rdyBtnHov?C.green:rdyBtnClr);
+
+  // BACK button
+  pixelBox({text:"BACK",x:200,y:diffY+118,w:200,h:48},C.red);
+
+  // Online indicator
   const isOnline = isOnlineConnected();
   const netClr = isOnline ? C.green : C.amber;
   const netTxt = isOnline ? "● ONLINE" : "● CONNECTING";
@@ -1355,11 +1624,34 @@ function lobbyWait(){
   ctx.shadowColor=netClr; ctx.shadowBlur=isOnline?6:0;
   ctx.fillStyle=netClr; ctx.fillText(netTxt,W-ntw-16,97); ctx.shadowBlur=0;
 
+  // Leave lobby confirm overlay
   if(leaveLobbyConfirm){
     ctx.fillStyle="rgba(0,0,0,0.75)"; ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#06061a"; ctx.fillRect(120,220,360,220); ctx.strokeStyle=C.red; ctx.shadowColor=C.red; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(120,220,360,220); ctx.shadowBlur=0;
     centered("LEAVE LOBBY?",272,"#ffffff",14,false); centered("Are you sure?",310,C.blue,10,false);
     pixelBox({text:"YES",x:160,y:345,w:120,h:50},C.red); pixelBox({text:"NO",x:320,y:345,w:120,h:50},C.green);
+  }
+
+  // COUNTDOWN OVERLAY
+  if(countdownActive){
+    ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="#05051a"; ctx.fillRect(140,220,320,250);
+    ctx.strokeStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=24; ctx.lineWidth=2; ctx.strokeRect(140,220,320,250); ctx.shadowBlur=0;
+    ctx.fillStyle=`rgba(${hexRgb(C.amber)},0.2)`; ctx.fillRect(142,222,316,24);
+    centered("STARTING IN",260,C.amber,10,false);
+    // Big countdown number with pulse
+    const pulse=0.85+0.15*Math.sin(Date.now()*0.012);
+    ctx.font=`${Math.round(72*pulse)}px ${PX}`;
+    const numStr=`${countdownValue}`;
+    const nw=ctx.measureText(numStr).width;
+    ctx.shadowColor=C.amber; ctx.shadowBlur=30*pulse; ctx.fillStyle=C.amber;
+    ctx.fillText(numStr,W/2-nw/2,370); ctx.shadowBlur=0;
+    // Diff label
+    const diffStr=(countdownDiff||"medium").toUpperCase();
+    ctx.font=`8px ${PX}`; const dw=ctx.measureText(diffStr).width;
+    const dc=[C.green,C.teal,C.amber,C.red][["easy","medium","hard","difficult"].indexOf(countdownDiff)]||C.teal;
+    pxDraw(diffStr,W/2-dw/2,418,dc,8,true);
+    centered("GET READY TO TYPE!",448,"#6677aa",7,false);
   }
 }
 
@@ -1505,8 +1797,12 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   if(esc.danger>=3){ const pulse=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(px,py,pw,ph); }
   else if(esc.danger===2){ const pulse=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(px,py,pw,ph); }
 
+  const PLAY_H = ph - 36 - 44; // usable play area height within pane
+
   const dynInterval = Math.max(30, cfg.spawnBase - p.score * 0.3);
   if(!isRemote){
+    // Local player: spawn new words and advance physics
+    // Bug9: y stored as pane-relative (0 = top of play area), rendered as pTop + y
     p.spawnTimer++;
     if(!p.falling && p.spawnTimer >= dynInterval){
       const esc2 = getEscalation(p.score);
@@ -1517,23 +1813,31 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
       if(p.falling) activeSet.add(p.falling.text);
       const avail2 = pool2.filter(w=>!activeSet.has(w));
       const src2 = avail2.length>0?avail2:pool2;
-      p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: pTop, speed };
+      p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: 0, speed };
       p.spawnTimer = 0;
     }
-  } else {
-    // FIX: Remote pane — animate falling word locally using local physics
-    // The word position is only synced on spawn, not every frame
+    // Advance local falling word physics (y = pane-relative)
     if(p.falling){
       p.falling.y += p.falling.speed;
-      const limit = pBottom - p.rows.length * pRowH;
-      if(p.falling.y >= limit){
-        // Word landed on remote side — just remove it locally
-        // The actual row state will be synced via the next gamestate packet
-        p.falling = null;
+      const limitRel = PLAY_H - p.rows.length * pRowH; // relative limit
+      if(p.falling.y >= limitRel){
+        p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
+        spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, pTop + limitRel, C.amber, 5);
+        p.falling = null; p.spawnTimer = 0;
+        if(p.rows.length > 12) p.dead = true;
+      }
+    }
+  } else {
+    // Remote player: animate falling word locally for smooth display (no y-override from network)
+    if(p.falling){
+      p.falling.y += p.falling.speed;
+      const limitRel = PLAY_H - p.rows.length * pRowH;
+      if(p.falling.y >= limitRel){
+        p.falling = null; // word landed — row state synced via next network packet
       }
     }
   }
-
+  // Draw stacked rows (pBottom is absolute canvas coord, correct as-is)
   for(let i=0;i<p.rows.length;i++){
     const r=p.rows[i];
     const wx = px + pCols[r.col % pCols.length];
@@ -1546,24 +1850,15 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.lineWidth=1; ctx.strokeRect(wx-5,wy-16,tw+10,20);
     pxDraw(r.text,wx,wy,rowClr,10,true);
   }
-
-  if(p.falling && !isRemote){
-    p.falling.y += p.falling.speed;
-    const limit = pBottom - p.rows.length * pRowH;
-    if(p.falling.y >= limit){
-      p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
-      spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, limit, C.amber, 5);
-      p.falling = null; p.spawnTimer = 0;
-      if(p.rows.length > 12) p.dead = true;
-    }
-  }
+  // Draw falling word — Bug9: p.falling.y is pane-relative, add pTop for absolute canvas y
   if(p.falling){
     const fx = px + pCols[p.falling.col % pCols.length];
+    const fy = pTop + p.falling.y; // convert pane-relative → absolute canvas y
     ctx.font=`11px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
     const wordClr=esc.danger>=3?C.red:esc.danger>=2?C.amber:p.color;
-    ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,p.falling.y-18,tw+10,22);
-    ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,p.falling.y-18,tw+10,22);
-    pxDraw(p.falling.text,fx,p.falling.y,wordClr,11,true);
+    ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,fy-18,tw+10,22);
+    ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,fy-18,tw+10,22);
+    pxDraw(p.falling.text,fx,fy,wordClr,11,true);
   }
 
   for(let i=p.particles.length-1;i>=0;i--){
@@ -1648,7 +1943,16 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   ctx.restore();
 }
 
+function autoSwitchFromDead(){
+  // Bug4: if the currently active player is dead, jump to next alive player
+  if(!players[activeTypingPlayer] || players[activeTypingPlayer].dead){
+    const nextAlive = players.findIndex((p,i) => !p.dead && i !== activeTypingPlayer);
+    if(nextAlive !== -1) activeTypingPlayer = nextAlive;
+  }
+}
+
 function game2P(){
+  autoSwitchFromDead();
   const pw=W/2-1, ph=H;
   const pCols2=[14,70,126];
   const pRowH2=32;
@@ -1665,47 +1969,144 @@ function game2P(){
   ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H);
   if(isOnlineGame) sendGameState();
   checkMultiGameOver();
+  drawMultiForfeitOverlay();
 }
 
 function game4P(){
-  const pw=W/2-1, ph=H/2-1;
-  const pCols4=[10,62,114];
-  const pRowH4=26;
-  ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H); ctx.fillRect(0,H/2-1,W,2);
-  const t=Date.now()*0.003, alpha=0.3+0.2*Math.sin(t);
-  ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H); ctx.fillRect(0,H/2-1,W,2);
-  ctx.fillStyle=`rgba(187,102,255,${(alpha*0.5).toFixed(2)})`; ctx.fillRect(W/2-2,H/2-2,4,4);
-  drawPane(players[0], 0,    0,    pw, ph, pCols4, pRowH4, activeTypingPlayer===0);
-  drawPane(players[1], W/2+1, 0,    pw, ph, pCols4, pRowH4, activeTypingPlayer===1);
-  drawPane(players[2], 0,    H/2+1, pw, ph, pCols4, pRowH4, activeTypingPlayer===2);
-  drawPane(players[3], W/2+1, H/2+1, pw, ph, pCols4, pRowH4, activeTypingPlayer===3);
+  autoSwitchFromDead();
+  // POV layout: the "focus" player (activeTypingPlayer) gets a large left pane
+  // The other 3 players are stacked as mini-panes on the right
+  const DIVX  = Math.round(W * 0.62);   // vertical divider x
+  const DIV_W = 2;
+  const mpw   = DIVX - DIV_W;           // main pane width
+  const mph   = H;                       // main pane height
+  const spw   = W - DIVX - DIV_W;       // small pane width
+  const sph   = Math.floor(H / 3);      // small pane height (3 stacked)
+
+  // Cols/rowH scale with pane size
+  const mainCols = [18, 90, 162, 234];
+  const mainRowH = 40;
+  const miniCols = [8, 44, 80];
+  const miniRowH = 22;
+
+  const focus = activeTypingPlayer;
+  // The 3 opponents in order (excluding focus)
+  const opponents = [0,1,2,3].filter(i => i !== focus);
+
+  // Draw dividers first
+  ctx.fillStyle = "#0a0a22";
+  ctx.fillRect(DIVX, 0, DIV_W, H);
+
+  // Animate divider glow
+  const t = Date.now() * 0.003;
+  const alpha = 0.4 + 0.25 * Math.sin(t);
+  ctx.fillStyle = `rgba(${hexRgb(players[focus].color)},${alpha.toFixed(2)})`;
+  ctx.fillRect(DIVX, 0, DIV_W, H);
+
+  // Horizontal dividers between mini panes
+  for(let i = 1; i < 3; i++){
+    const dy = i * sph;
+    ctx.fillStyle = "#0a0a22"; ctx.fillRect(DIVX + DIV_W, dy - 1, spw, 2);
+    ctx.fillStyle = `rgba(80,80,180,0.35)`; ctx.fillRect(DIVX + DIV_W, dy - 1, spw, 2);
+  }
+
+  // Draw main (focus) pane — large, left side
+  drawPane(players[focus], 0, 0, mpw, mph, mainCols, mainRowH, true, false);
+
+  // Draw 3 mini opponent panes — stacked right side
+  opponents.forEach((oppIdx, slot) => {
+    const sy = slot * sph;
+    const isThisActive = false; // opponent panes never get typing focus
+    drawPane(players[oppIdx], DIVX + DIV_W, sy, spw, sph, miniCols, miniRowH, isThisActive, false);
+  });
+
+  // "YOU" label on main pane top
+  const focusP = players[focus];
+  ctx.font = `7px ${PX}`;
+  const youTxt = "◀ YOUR LANE";
+  const yw = ctx.measureText(youTxt).width;
+  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},0.55)`;
+  ctx.fillText(youTxt, mpw/2 - yw/2, H - 4);
+
+  // TAB hint on right side bottom
+  ctx.font = `6px ${PX}`;
+  const tabTxt = "TAB = switch POV";
+  const tw2 = ctx.measureText(tabTxt).width;
+  ctx.fillStyle = "rgba(60,70,110,0.9)";
+  ctx.fillText(tabTxt, DIVX + DIV_W + spw/2 - tw2/2, H - 4);
+
   checkMultiGameOver();
+  drawMultiForfeitOverlay();
 }
 
-let lastStanding = null, lastStandingTimer = 0;
+function drawMultiForfeitOverlay(){
+  if(!multiForfeitConfirm) return;
+  ctx.fillStyle="rgba(0,0,0,0.75)"; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="#06061a"; ctx.fillRect(120,200,360,260);
+  ctx.strokeStyle=C.red; ctx.shadowColor=C.red; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(120,200,360,260); ctx.shadowBlur=0;
+  // corner accents
+  const acs=9; ctx.fillStyle=C.red;
+  [[120,200],[476,200],[120,456],[476,456]].forEach(([ax,ay])=>{ ctx.fillRect(ax,ay,acs,2); ctx.fillRect(ax,ay,2,acs); });
+  // title bar
+  ctx.fillStyle=`rgba(${hexRgb(C.red)},0.22)`; ctx.fillRect(122,202,356,24);
+  centered("FORFEIT MATCH?",248,C.red,13,true);
+  ctx.fillStyle=`rgba(${hexRgb(C.red)},0.3)`; ctx.fillRect(140,232,320,1);
+  // subtitle
+  ctx.font=`8px ${PX}`; const sub="You will be eliminated!"; const sw=ctx.measureText(sub).width;
+  ctx.fillStyle="#8899bb"; ctx.fillText(sub, W/2-sw/2, 258);
+  // player name shown
+  const me = isOnlineGame ? players[localPlayerIdx] : players[activeTypingPlayer];
+  if(me){
+    ctx.font=`9px ${PX}`; const nm=me.name; const nw2=ctx.measureText(nm).width;
+    ctx.shadowColor=me.color; ctx.shadowBlur=10; ctx.fillStyle=me.color;
+    ctx.fillText(nm, W/2-nw2/2, 286); ctx.shadowBlur=0;
+  }
+  ctx.fillStyle=`rgba(${hexRgb(C.red)},0.2)`; ctx.fillRect(140,300,320,1);
+  // YES / NO buttons
+  const yesHov=hit({x:148,y:316,w:130,h:50},lastMouseX,lastMouseY);
+  const noHov =hit({x:322,y:316,w:130,h:50},lastMouseX,lastMouseY);
+  pixelBox({text:"FORFEIT",x:148,y:316,w:130,h:50}, yesHov?C.red:"#882233");
+  pixelBox({text:"CANCEL", x:322,y:316,w:130,h:50}, noHov?C.green:C.teal);
+  // ESC hint
+  if(Math.floor(Date.now()/600)%2===0){
+    ctx.font=`7px ${PX}`; const hint="ESC to cancel"; const hw=ctx.measureText(hint).width;
+    ctx.fillStyle="#2a3a55"; ctx.fillText(hint, W/2-hw/2, 390);
+  }
+}
+
+
 
 function checkMultiGameOver(){
+  if(state !== "game") return; // Bug2: don't run if state already changed this frame
   const alive = players.filter(p=>!p.dead);
   if(alive.length === 0){
+    // Bug3: all dead (e.g. simultaneous forfeit) — no winner
+    lastStanding = null;
     state = "gameover_multi";
+    stopBGM();
     return;
   }
   if(alive.length === 1 && players.length > 1){
-    if(!lastStanding){
+    // Bug3: exactly one survivor — set lastStanding only if not already set
+    // (avoids overwriting if they were already the last one standing)
+    if(!lastStanding || lastStanding !== alive[0]){
       lastStanding = alive[0];
-      lastStandingTimer = 180;
+      lastStandingTimer = 120; // 2 seconds at 60fps
     }
   }
-  if(lastStanding){
+  if(lastStanding && !lastStanding.dead){
     lastStandingTimer--;
     if(lastStandingTimer <= 0){
       state = "gameover_multi";
+      stopBGM();
     }
+  } else if(lastStanding && lastStanding.dead){
+    // Bug3: somehow lastStanding died (shouldn't happen but guard it)
+    lastStanding = null;
   }
 }
 
 function gameover_multi(){
-  if(bgmState==="game") stopBGM();
   ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,W,H);
   ctx.fillStyle="#05050f"; ctx.fillRect(80,180,440,360);
   ctx.strokeStyle=C.purple; ctx.shadowColor=C.purple; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(80,180,440,360); ctx.shadowBlur=0;
@@ -1928,7 +2329,10 @@ function drawSplashName(){
 function confirmUsername(){
   const val=usernameInput.trim();
   if(val.length===0){ usernameErr="NAME CANNOT BE EMPTY!"; sfxMiss(); return; }
-  username=val; sfxFanfare();
+  username=val;
+  usernameInput=""; // Bug8: clear input after confirmed so it's fresh next time
+  usernameErr="";
+  sfxFanfare();
   setTimeout(()=>{ startBGM("menu"); state="menu"; lastState="splash"; }, 350);
 }
 
