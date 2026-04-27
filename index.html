@@ -134,7 +134,7 @@ let username = "";
 let usernameInput = "";
 let playerCount = 1;
 
-let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium" };
+let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium", hostName:"HOST", hostReady:false };
 let leaveLobbyConfirm = false;
 // Ready system
 let myReady = false;
@@ -909,10 +909,10 @@ function generateCode(){ return Math.random().toString(36).substring(2,7).toUppe
 
 async function hostGame(){
   lobby.code = generateCode();
-  lobby.players = 1;
+  lobby.players = 1; // just host to start
   lobby.role = "host";
   lobby.diff = "medium";
-  lobbyPeers = {};
+  lobbyPeers = {}; // guests only — host is tracked separately via myReady
   myReady = false;
   lobbyReadyCount = 0;
   countdownActive = false; countdownValue = 3;
@@ -935,7 +935,8 @@ async function hostGame(){
       });
       conn.on("close", ()=>{
         guestConns = guestConns.filter(c=>c!==conn);
-        lobby.players = 1 + guestConns.length;
+        // guests in lobbyPeers + host (self)
+        lobby.players = Object.keys(lobbyPeers).length + 1;
         lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
         if(countdownActive){ countdownActive=false; if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; } sfxMiss(); }
       });
@@ -989,17 +990,24 @@ function onLobbyMsg(data, fromConn){
   const { type, from, name, peers } = data;
 
   if(type==="welcome"){
-    if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:false}; });
-    lobbyPeers[from] = { name:name||"HOST", ready:data.hostReady||false };
-    lobby.players = Object.keys(lobbyPeers).length;
+    // peers = other guests sent by host (excludes host itself and us)
+    if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
+    // Store host info separately for display, not in lobbyPeers
+    lobby.hostName = name||"HOST";
+    lobby.hostReady = data.hostReady||false;
+    // total = other guests + host + self
+    lobby.players = Object.keys(lobbyPeers).length + 2;
     lobby.diff = data.diff || "medium";
-    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
+                    + (myReady?1:0)
+                    + (lobby.hostReady?1:0);
     sfxPlayerJoin();
 
   } else if(type==="join"){
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from] = { name:name||from, ready:false };
-    lobby.players = Object.keys(lobbyPeers).length;
+    // lobby.players = guests + host (1)
+    lobby.players = Object.keys(lobbyPeers).length + 1;
     // host sends full peer list update back to everyone
     broadcastLobby({ type:"joined", from, name, total:lobby.players, diff:lobby.diff,
       peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready})) });
@@ -1011,25 +1019,33 @@ function onLobbyMsg(data, fromConn){
     } else if(!lobbyPeers[from]){
       lobbyPeers[from] = { name:name||from, ready:false };
     }
-    lobby.players = data.total || Object.keys(lobbyPeers).length;
+    // total sent by host already includes host itself
+    lobby.players = data.total || Object.keys(lobbyPeers).length + 1;
     lobby.diff = data.diff || lobby.diff;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     sfxPlayerJoin();
 
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
+    // guests in lobbyPeers + host (self)
+    lobby.players = Object.keys(lobbyPeers).length + 1;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
-    // host checks if all ready
-    if(lobby.role==="host") checkAllReady();
-    // broadcast updated ready state to others
+    // broadcast updated ready state to all guests
     if(lobby.role==="host"){
       broadcastLobby({ type:"readystate", from, isReady:data.isReady,
         readyCount: lobbyReadyCount, total: lobby.players });
     }
 
   } else if(type==="readystate"){
-    if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
+    const who = data.from || from;
+    // If this is the host's own ready state (guest perspective)
+    if(lobby.role==="join" && who === "host"){
+      lobby.hostReady = data.isReady;
+    } else if(lobbyPeers[who]){
+      lobbyPeers[who].ready = data.isReady;
+    }
+    if(data.total) lobby.players = data.total;
     lobbyReadyCount = data.readyCount;
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
 
@@ -1047,8 +1063,13 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="leave"){
     delete lobbyPeers[from];
-    lobby.players = Object.keys(lobbyPeers).length;
-    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    // For host: guests + self. For guest: other guests + host + self
+    lobby.players = lobby.role==="host"
+      ? Object.keys(lobbyPeers).length + 1
+      : Object.keys(lobbyPeers).length + 2;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
+                    + (myReady?1:0)
+                    + (lobby.role==="join" && lobby.hostReady ? 1 : 0);
     // cancel countdown if someone leaves
     if(countdownActive){ countdownActive=false; countdownValue=3; sfxMiss(); }
   }
@@ -1307,8 +1328,16 @@ document.addEventListener("keydown",(e)=>{
   if(state==="lobby_wait" && e.key===" " && !countdownActive){
     e.preventDefault();
     myReady = !myReady;
-    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    const guestReady = Object.values(lobbyPeers).filter(p=>p.ready).length;
+    const hostReadyVal = lobby.role==="join" ? (lobby.hostReady?1:0) : 0;
+    lobbyReadyCount = guestReady + (myReady?1:0) + hostReadyVal;
+    // Broadcast own ready state to all peers
     broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
+    // If host, also send readystate back to guests (so they see host is ready)
+    if(lobby.role==="host"){
+      broadcastLobby({ type:"readystate", from:myPlayerId, isReady:myReady,
+        readyCount:lobbyReadyCount, total:lobby.players });
+    }
     if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
     return;
   }
@@ -1567,11 +1596,22 @@ function lobbyWait(){
   pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",165,C.green,18,true);
 
   // Player panels
-  const peers=Object.entries(lobbyPeers);
-  const allPeers=[
-    { id:myPlayerId, name:username?username.toUpperCase():"HOST", ready:myReady, isMe:true },
-    ...peers.map(([id,p])=>({ id, name:p.name||id, ready:p.ready||false, isMe:false }))
-  ];
+  // For HOST: slot 0 = me (host), slots 1+ = guests in lobbyPeers
+  // For GUEST: slot 0 = host (from lobby.hostName), slot 1 = me, slots 2+ = other guests
+  const guestList = Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name||id,ready:p.ready||false,isMe:false}));
+  let allPeers;
+  if(lobby.role==="host"){
+    allPeers = [
+      { id:myPlayerId, name:username?username.toUpperCase():"HOST", ready:myReady, isMe:true },
+      ...guestList
+    ];
+  } else {
+    allPeers = [
+      { id:"host", name:(lobby.hostName||"HOST").toUpperCase(), ready:lobby.hostReady||false, isMe:false },
+      { id:myPlayerId, name:username?username.toUpperCase():"P2", ready:myReady, isMe:true },
+      ...guestList
+    ];
+  }
   const maxShow = lobby.required;
   const panelW=240, panelH=100, panelGap=10;
   const totalW=Math.min(maxShow,2)*(panelW+panelGap)-panelGap;
