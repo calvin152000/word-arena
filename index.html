@@ -134,7 +134,7 @@ let username = "";
 let usernameInput = "";
 let playerCount = 1;
 
-let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium", hostName:"HOST", hostReady:false };
+let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium", hostName:"HOST", hostReady:false, hostPeerId:null };
 let leaveLobbyConfirm = false;
 // Ready system
 let myReady = false;
@@ -845,7 +845,8 @@ document.addEventListener("mousedown",(e)=>{
     // HOST START button
     if(lobby.role==="host" && !countdownActive){
       const startBtn={x:110,y:hintY2+54,w:380,h:52};
-      const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
+      const enoughPlayers2 = lobby.players >= lobby.required;
+      const canStart = enoughPlayers2 && lobbyReadyCount >= lobby.players;
       if(hit(startBtn,mx,my)){
         if(canStart){ sfxFanfare(); startCountdown(); }
         else { sfxMiss(); }
@@ -992,9 +993,10 @@ function onLobbyMsg(data, fromConn){
   if(type==="welcome"){
     // peers = other guests sent by host (excludes host itself and us)
     if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
-    // Store host info separately for display, not in lobbyPeers
+    // Store host info separately — NOT in lobbyPeers
     lobby.hostName = name||"HOST";
     lobby.hostReady = data.hostReady||false;
+    lobby.hostPeerId = from; // Fix Issue 2: track host's actual peer ID
     // total = other guests + host + self
     lobby.players = Object.keys(lobbyPeers).length + 2;
     lobby.diff = data.diff || "medium";
@@ -1022,7 +1024,10 @@ function onLobbyMsg(data, fromConn){
     // total sent by host already includes host itself
     lobby.players = data.total || Object.keys(lobbyPeers).length + 1;
     lobby.diff = data.diff || lobby.diff;
-    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+    // Fix Issue 3: include hostReady in count for guest side
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
+                    + (myReady?1:0)
+                    + (lobby.role==="join" && lobby.hostReady ? 1 : 0);
     sfxPlayerJoin();
 
   } else if(type==="ready"){
@@ -1039,8 +1044,9 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="readystate"){
     const who = data.from || from;
-    // If this is the host's own ready state (guest perspective)
-    if(lobby.role==="join" && who === "host"){
+    // Fix Issue 2: identify host by their actual peer ID, not the string "host"
+    const isFromHost = lobby.role==="join" && who === lobby.hostPeerId;
+    if(isFromHost){
       lobby.hostReady = data.isReady;
     } else if(lobbyPeers[who]){
       lobbyPeers[who].ready = data.isReady;
@@ -1710,11 +1716,17 @@ function lobbyWait(){
 
   // HOST START button (host only)
   if(lobby.role==="host" && !countdownActive){
-    const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
+    const enoughPlayers = lobby.players >= lobby.required;
+    const allReady = lobbyReadyCount >= lobby.players && enoughPlayers;
+    const canStart = allReady;
     const startBtn={x:110,y:hintY+54,w:380,h:52};
     const startHov=hit(startBtn,lastMouseX,lastMouseY);
     const startClr = canStart ? (startHov?C.green:C.teal) : "#334455";
-    const startTxt = canStart ? "▶  START GAME  (ENTER)" : `WAITING FOR PLAYERS  (${lobby.players}/${lobby.required})`;
+    const startTxt = canStart
+      ? "▶  START GAME  (ENTER)"
+      : !enoughPlayers
+        ? `WAITING FOR PLAYERS  (${lobby.players}/${lobby.required})`
+        : `NOT ALL READY  (${lobbyReadyCount}/${lobby.players})`;
     ctx.fillStyle=canStart?`rgba(${hexRgb(C.teal)},0.12)`:`rgba(20,20,40,0.6)`; ctx.fillRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
     ctx.strokeStyle=startClr; ctx.lineWidth=2; ctx.strokeRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
     if(canStart && startHov){ ctx.shadowColor=C.green; ctx.shadowBlur=16; }
