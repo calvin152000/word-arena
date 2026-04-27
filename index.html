@@ -833,18 +833,24 @@ document.addEventListener("mousedown",(e)=>{
       }
     });
   } else if(state==="lobby_wait"){
-    const backBtn={x:200,y:548,w:200,h:52};
+    // BACK button — y position varies by 2P/4P, use generous range
+    const is4P2 = lobby.required===4;
+    const rcY2 = is4P2 ? 415 : 307;
+    const diffY2 = rcY2 + 46;
+    const hintY2 = diffY2 + 58;
+    const backY2 = hintY2 + 116;
+    const backBtn={x:200,y:backY2,w:200,h:42};
     if(hit(backBtn,mx,my)){ leaveLobbyConfirm=true; sfxClick(); return; }
 
-    // READY / UNREADY button
-    const readyBtn={x:150,y:470,w:300,h:52};
-    if(hit(readyBtn,mx,my) && !countdownActive){
-      myReady = !myReady;
-      lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
-      broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
-      if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
-      if(lobby.role==="host") checkAllReady();
-      return;
+    // HOST START button
+    if(lobby.role==="host" && !countdownActive){
+      const startBtn={x:110,y:hintY2+54,w:380,h:52};
+      const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
+      if(hit(startBtn,mx,my)){
+        if(canStart){ sfxFanfare(); startCountdown(); }
+        else { sfxMiss(); }
+        return;
+      }
     }
   } else if(state==="options"){
     if(mx>150&&mx<450&&my>210&&my<275){
@@ -1053,14 +1059,8 @@ function broadcastLobby(data){
 }
 
 function checkAllReady(){
-  // Only host calls this
-  if(lobby.role !== "host") return;
-  const totalPlayers = lobby.players; // includes self
-  const guestReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length;
-  const allReady = myReady && guestReadyCount >= (totalPlayers - 1) && totalPlayers >= lobby.required;
-  if(allReady && !countdownActive){
-    startCountdown();
-  }
+  // No longer auto-starts — host manually clicks START button
+  // This function is kept for future use / broadcasting ready state updates
 }
 
 let countdownInterval = null;
@@ -1303,14 +1303,20 @@ document.addEventListener("keydown",(e)=>{
   if(!audioReady){ initAudio(); audioCtx.resume().then(()=>{ startBGM("menu"); }); }
   else if(audioCtx && audioCtx.state === "suspended"){ audioCtx.resume(); }
 
-  // SPACE = ready toggle in lobby
+  // SPACE = ready toggle in lobby (all players)
   if(state==="lobby_wait" && e.key===" " && !countdownActive){
     e.preventDefault();
     myReady = !myReady;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
     if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
-    if(lobby.role==="host") checkAllReady();
+    return;
+  }
+  // ENTER = host starts game (when all ready)
+  if(state==="lobby_wait" && e.key==="Enter" && lobby.role==="host" && !countdownActive){
+    const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
+    if(canStart){ sfxFanfare(); startCountdown(); }
+    else { sfxMiss(); }
     return;
   }
 
@@ -1641,14 +1647,56 @@ function lobbyWait(){
   const mslw=ctx.measureText(msub).width;
   ctx.fillStyle="#556677"; ctx.fillText(msub, W/2-mslw/2, diffY+36);
 
-  // READY button
-  const readyBtn={x:150,y:diffY+56,w:300,h:52};
-  const rdyBtnClr=myReady?(countdownActive?C.amber:C.green):C.teal;
-  const rdyBtnHov=hit(readyBtn,lastMouseX,lastMouseY)&&!countdownActive;
-  pixelBox({text:myReady?"✓ READY! (CLICK TO UNREADY)":"PRESS SPACE / CLICK TO READY",x:readyBtn.x,y:readyBtn.y,w:readyBtn.w,h:readyBtn.h},rdyBtnHov?C.green:rdyBtnClr);
+  // SPACE TO READY hint (all players) or READY status
+  const hintY = diffY + 58;
+  const rdyHintClr = myReady ? C.green : C.teal;
+  ctx.fillStyle=`rgba(${hexRgb(rdyHintClr)},0.12)`; ctx.fillRect(40,hintY,520,44);
+  ctx.strokeStyle=myReady?C.green:`rgba(${hexRgb(C.teal)},0.4)`; ctx.lineWidth=2; ctx.strokeRect(40,hintY,520,44);
+  if(myReady){
+    // Blinking "READY" state
+    if(Math.floor(Date.now()/500)%2===0){
+      ctx.shadowColor=C.green; ctx.shadowBlur=12;
+    }
+    ctx.font=`9px ${PX}`; const rt="✓  YOU ARE READY  —  PRESS SPACE TO UNREADY";
+    const rw=ctx.measureText(rt).width;
+    ctx.fillStyle=C.green; ctx.fillText(rt,W/2-rw/2,hintY+27); ctx.shadowBlur=0;
+  } else {
+    ctx.font=`8px ${PX}`; const ht="PRESS  SPACE  TO  READY  UP";
+    const hw=ctx.measureText(ht).width;
+    // Animated space bar icon
+    const t2=Date.now()*0.004; const pulse=0.6+0.4*Math.sin(t2);
+    ctx.fillStyle=`rgba(${hexRgb(C.teal)},${pulse.toFixed(2)})`; ctx.fillText(ht,W/2-hw/2,hintY+27);
+  }
 
-  // BACK button
-  pixelBox({text:"BACK",x:200,y:diffY+118,w:200,h:48},C.red);
+  // HOST START button (host only)
+  if(lobby.role==="host" && !countdownActive){
+    const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
+    const startBtn={x:110,y:hintY+54,w:380,h:52};
+    const startHov=hit(startBtn,lastMouseX,lastMouseY);
+    const startClr = canStart ? (startHov?C.green:C.teal) : "#334455";
+    const startTxt = canStart ? "▶  START GAME  (ENTER)" : `WAITING FOR PLAYERS  (${lobby.players}/${lobby.required})`;
+    ctx.fillStyle=canStart?`rgba(${hexRgb(C.teal)},0.12)`:`rgba(20,20,40,0.6)`; ctx.fillRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
+    ctx.strokeStyle=startClr; ctx.lineWidth=2; ctx.strokeRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
+    if(canStart && startHov){ ctx.shadowColor=C.green; ctx.shadowBlur=16; }
+    const s=6; ctx.fillStyle=startClr;
+    ctx.fillRect(startBtn.x,startBtn.y,s,2);ctx.fillRect(startBtn.x,startBtn.y,2,s);
+    ctx.fillRect(startBtn.x+startBtn.w-s,startBtn.y,s,2);ctx.fillRect(startBtn.x+startBtn.w-2,startBtn.y,2,s);
+    ctx.fillRect(startBtn.x,startBtn.y+startBtn.h-2,s,2);ctx.fillRect(startBtn.x,startBtn.y+startBtn.h-s,2,s);
+    ctx.fillRect(startBtn.x+startBtn.w-s,startBtn.y+startBtn.h-2,s,2);ctx.fillRect(startBtn.x+startBtn.w-2,startBtn.y+startBtn.h-s,2,s);
+    ctx.font=`8px ${PX}`; const stw=ctx.measureText(startTxt).width;
+    ctx.fillStyle=startClr; ctx.fillText(startTxt,W/2-stw/2,startBtn.y+startBtn.h/2+4); ctx.shadowBlur=0;
+
+    // BACK button (smaller, below START)
+    pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
+  } else if(!countdownActive){
+    // Guest: just waiting for host to start
+    ctx.fillStyle="#070720"; ctx.fillRect(110,hintY+54,380,52); ctx.strokeStyle="#334466"; ctx.lineWidth=1; ctx.strokeRect(110,hintY+54,380,52);
+    const wdots2=".".repeat(Math.floor(Date.now()/500)%4);
+    ctx.font=`8px ${PX}`; const wt2="WAITING FOR HOST TO START"+wdots2; const wt2w=ctx.measureText(wt2).width;
+    ctx.fillStyle="#445566"; ctx.fillText(wt2,W/2-wt2w/2,hintY+85);
+    // BACK button
+    pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
+  }
 
   // Online indicator
   const isOnline = isOnlineConnected();
