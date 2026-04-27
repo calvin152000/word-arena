@@ -1082,7 +1082,19 @@ function onLobbyMsg(data, fromConn){
 }
 
 function broadcastLobby(data){
+  // Send to all guests (host calls this)
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
+}
+
+function sendToHost(data){
+  // Guest sends to host via hostConn
+  if(hostConn){ try{ hostConn.send(data); }catch(e){} }
+}
+
+function sendLobby(data){
+  // Smart send: if host → broadcast to guests; if guest → send to host
+  if(lobby.role==="host") broadcastLobby(data);
+  else sendToHost(data);
 }
 
 function checkAllReady(){
@@ -1119,7 +1131,7 @@ function cancelCountdown(){
 }
 
 function leaveLobbyChannel(){
-  broadcastLobby({ type:"leave", from:myPlayerId });
+  sendLobby({ type:"leave", from:myPlayerId });
   if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
   countdownActive=false; countdownValue=3;
   myReady=false; lobbyReadyCount=0;
@@ -1337,12 +1349,14 @@ document.addEventListener("keydown",(e)=>{
     const guestReady = Object.values(lobbyPeers).filter(p=>p.ready).length;
     const hostReadyVal = lobby.role==="join" ? (lobby.hostReady?1:0) : 0;
     lobbyReadyCount = guestReady + (myReady?1:0) + hostReadyVal;
-    // Broadcast own ready state to all peers
-    broadcastLobby({ type:"ready", from:myPlayerId, isReady:myReady });
-    // If host, also send readystate back to guests (so they see host is ready)
+
     if(lobby.role==="host"){
+      // Host broadcasts own ready state to all guests
       broadcastLobby({ type:"readystate", from:myPlayerId, isReady:myReady,
         readyCount:lobbyReadyCount, total:lobby.players });
+    } else {
+      // Guest sends ready state to host
+      sendToHost({ type:"ready", from:myPlayerId, isReady:myReady });
     }
     if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
     return;
