@@ -768,10 +768,19 @@ document.addEventListener("mousedown",(e)=>{
 
   if(state==="gameover_multi"){
     if(mx>80&&mx<300&&my>532&&my<576){
-      sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200); return;
+      sfxTransition();
+      if(playerCount > 1){
+        // Go back to lobby for rematch instead of directly restarting
+        returnToLobby();
+      } else {
+        setTimeout(()=>startGame(difficulty, playerCount),200);
+      }
+      return;
     }
     if(mx>310&&mx<530&&my>532&&my<576){
-      sfxTransition(); state="menu"; resetAll(); startBGM("menu"); return;
+      sfxTransition();
+      if(playerCount > 1) leaveLobbyChannel();
+      state="menu"; resetAll(); startBGM("menu"); return;
     }
   }
 
@@ -932,13 +941,20 @@ async function hostGame(){
         conn.send({ type:"welcome", from:myPlayerId, name:username||"HOST",
                     diff: lobby.diff,
                     hostReady: myReady,
+                    hostPeerId: myPlayerId,
                     peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false})) });
       });
       conn.on("close", ()=>{
         guestConns = guestConns.filter(c=>c!==conn);
-        // guests in lobbyPeers + host (self)
+        // Remove disconnected peer from lobbyPeers by finding who owns this conn
+        // We tag each conn with the peer id when they send "join"
+        if(conn._peerId) delete lobbyPeers[conn._peerId];
         lobby.players = Object.keys(lobbyPeers).length + 1;
         lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+        // Notify remaining guests of the updated peer list
+        broadcastLobby({ type:"joined", from:"__disconnect__", name:"", total:lobby.players,
+          diff:lobby.diff, hostPeerId:myPlayerId,
+          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready})) });
         if(countdownActive){ countdownActive=false; if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; } sfxMiss(); }
       });
     });
@@ -996,7 +1012,7 @@ function onLobbyMsg(data, fromConn){
     // Store host info separately — NOT in lobbyPeers
     lobby.hostName = name||"HOST";
     lobby.hostReady = data.hostReady||false;
-    lobby.hostPeerId = from; // Fix Issue 2: track host's actual peer ID
+    lobby.hostPeerId = data.hostPeerId || from; // Fix: use explicit hostPeerId field
     // total = other guests + host + self
     lobby.players = Object.keys(lobbyPeers).length + 2;
     lobby.diff = data.diff || "medium";
@@ -1008,27 +1024,35 @@ function onLobbyMsg(data, fromConn){
   } else if(type==="join"){
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from] = { name:name||from, ready:false };
-    // lobby.players = guests + host (1)
+    // Tag the connection so we can remove this peer on abrupt disconnect
+    if(fromConn) fromConn._peerId = from;
     lobby.players = Object.keys(lobbyPeers).length + 1;
-    // host sends full peer list update back to everyone
     broadcastLobby({ type:"joined", from, name, total:lobby.players, diff:lobby.diff,
+      hostPeerId: myPlayerId,
       peers: Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready})) });
 
   } else if(type==="joined"){
-    // update full peer list
+    const isDisconnect = (from === "__disconnect__");
+    // update full peer list from host's authoritative peers array
     if(data.peers){
-      data.peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
-    } else if(!lobbyPeers[from]){
+      // Clear stale peers and rebuild from host's list
+      Object.keys(lobbyPeers).forEach(id => {
+        if(!data.peers.find(p=>p.id===id) && id!==myPlayerId) delete lobbyPeers[id];
+      });
+      data.peers.forEach(p=>{
+        if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};
+      });
+    } else if(!isDisconnect && !lobbyPeers[from]){
       lobbyPeers[from] = { name:name||from, ready:false };
     }
-    // total sent by host already includes host itself
+    // Set hostPeerId from joined messages too (host always sends these)
+    if(data.hostPeerId) lobby.hostPeerId = data.hostPeerId;
     lobby.players = data.total || Object.keys(lobbyPeers).length + 1;
     lobby.diff = data.diff || lobby.diff;
-    // Fix Issue 3: include hostReady in count for guest side
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
                     + (myReady?1:0)
                     + (lobby.role==="join" && lobby.hostReady ? 1 : 0);
-    sfxPlayerJoin();
+    if(!isDisconnect) sfxPlayerJoin(); else sfxMiss();
 
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
@@ -1067,6 +1091,20 @@ function onLobbyMsg(data, fromConn){
     // Legacy fallback
     if(lobby.role==="join") startGame("multi", lobby.required);
 
+  } else if(type==="playagain"){
+    // A peer clicked Play Again — return everyone to lobby
+    myReady = false;
+    lobbyReadyCount = 0;
+    countdownActive = false; countdownValue = 3;
+    if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+    // Reset all peers' ready flags
+    Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
+    if(lobby.role==="join") lobby.hostReady = false;
+    // If host receives playagain from a guest, broadcast to all other guests
+    if(lobby.role==="host") broadcastLobby({ type:"playagain", from });
+    state = "lobby_wait";
+    startBGM("menu");
+
   } else if(type==="leave"){
     delete lobbyPeers[from];
     // For host: guests + self. For guest: other guests + host + self
@@ -1097,10 +1135,28 @@ function sendLobby(data){
   else sendToHost(data);
 }
 
-function checkAllReady(){
-  // No longer auto-starts — host manually clicks START button
-  // This function is kept for future use / broadcasting ready state updates
+// ── REMATCH: return to lobby without disconnecting ────────────────────────────
+function returnToLobby(){
+  // Reset ready state for new round
+  myReady = false;
+  lobbyReadyCount = 0;
+  countdownActive = false; countdownValue = 3;
+  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+
+  // Reset lobbyPeers ready flags
+  Object.keys(lobbyPeers).forEach(id => {
+    if(lobbyPeers[id]) lobbyPeers[id].ready = false;
+  });
+  if(lobby.role==="join") lobby.hostReady = false;
+
+  // Tell all peers to return to lobby
+  if(lobby.role==="host") broadcastLobby({ type:"playagain", from:myPlayerId });
+  else sendToHost({ type:"playagain", from:myPlayerId });
+
+  state = "lobby_wait";
+  startBGM("menu");
 }
+
 
 let countdownInterval = null;
 
@@ -2336,8 +2392,15 @@ function gameover_multi(){
   ctx.fillStyle=C.dim; ctx.fillRect(100,520,400,1);
   const gmPlayHov=(lastMouseX>80&&lastMouseX<300&&lastMouseY>532&&lastMouseY<576);
   const gmMenuHov=(lastMouseX>310&&lastMouseX<530&&lastMouseY>532&&lastMouseY<576);
-  pixelBox({text:"PLAY AGAIN",x:80,y:532,w:220,h:44},gmPlayHov?C.green:C.teal);
+  const rematchLabel = playerCount>1 ? "REMATCH" : "PLAY AGAIN";
+  pixelBox({text:rematchLabel,x:80,y:532,w:220,h:44},gmPlayHov?C.green:C.teal);
   pixelBox({text:"MENU",x:310,y:532,w:220,h:44},gmMenuHov?C.amber:C.purple);
+  // Hint for multiplayer
+  if(playerCount>1){
+    ctx.font=`7px ${PX}`; const hint="Rematch returns all players to lobby";
+    const hw=ctx.measureText(hint).width;
+    ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,582);
+  }
 }
 
 function gameover(){
