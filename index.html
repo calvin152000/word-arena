@@ -136,10 +136,8 @@ let playerCount = 1;
 
 let lobby = { code: null, required: 2, players: 0, role: null, diff: "medium", hostName:"HOST", hostReady:false, hostPeerId:null };
 let leaveLobbyConfirm = false;
-// Ready system
 let myReady = false;
 let lobbyReadyCount = 0;
-// Countdown state
 let countdownActive = false;
 let countdownValue = 3;
 let countdownTimer = 0;
@@ -489,7 +487,6 @@ const DIFF_CFG = {
   difficult: { baseSpeed:4.2, rand:1.5, pts:25, spawnBase:75  },
 };
 
-// ── MULTIPLAYER: mixed word pool, score-based word length progression ─────────
 const WORDS_MULTI = [
   ...WORDS.easy.map(w=>({w, tier:0})),
   ...WORDS.medium.map(w=>({w, tier:1})),
@@ -497,7 +494,6 @@ const WORDS_MULTI = [
   ...WORDS.difficult.map(w=>({w, tier:3})),
 ];
 
-// Group words by length for fast lookup
 const WORDS_BY_LENGTH = {};
 WORDS_MULTI.forEach(({w, tier})=>{
   if(!WORDS_BY_LENGTH[w.length]) WORDS_BY_LENGTH[w.length] = [];
@@ -505,20 +501,10 @@ WORDS_MULTI.forEach(({w, tier})=>{
 });
 const AVAILABLE_LENGTHS = Object.keys(WORDS_BY_LENGTH).map(Number).sort((a,b)=>a-b);
 
-// ── DETERMINISTIC MULTI SPAWN COORDINATOR ────────────────────────────────────
-// All players share the same spawn sequence using a seeded PRNG.
-// No network messages needed — every browser independently computes
-// the same words at the same times because they share:
-//   - gameStartTime (synced at countdown)
-//   - the same PRNG seed
-// Each player then picks a DIFFERENT word of the SAME LENGTH from their
-// own active-word exclusion set.
+let multiGameSeed = 0;
+let multiGameStartMs = 0;
+let lastSpawnTick = -1;
 
-let multiGameSeed = 0;       // set at game start, same for all players
-let multiGameStartMs = 0;    // absolute ms when game started (same for all via countdown)
-let lastSpawnTick = -1;      // which spawn wave we last processed
-
-// Seeded PRNG (mulberry32)
 function seededRand(seed){
   let t = seed + 0x6D2B79F5;
   t = Math.imul(t ^ t >>> 15, t | 1);
@@ -527,51 +513,49 @@ function seededRand(seed){
 }
 
 function getSpawnSeedForTick(tick){
-  return multiGameSeed * 1000 + tick * 7919; // different prime per tick
+  return multiGameSeed * 1000 + tick * 7919;
 }
 
 function tickMultiSpawnCoordinator(){
   if(!multiGameStartMs) return;
 
-  const elapsed = Date.now() - multiGameStartMs; // ms since game start
+  const elapsed = Date.now() - multiGameStartMs;
 
-  // Average score for interval scaling
   const alive = players.filter(p=>!p.dead);
   if(alive.length > 0){
     multiRoundScore = alive.reduce((s,p)=>s+p.score,0) / alive.length;
   }
   multiSpawnInterval = Math.max(45, 130 - multiRoundScore * 0.25);
 
-  // Convert interval (frames@60fps) to ms
   const intervalMs = (multiSpawnInterval / 60) * 1000;
-
-  // Which spawn tick should have happened by now?
   const currentTick = Math.floor(elapsed / intervalMs);
 
-  if(currentTick <= lastSpawnTick) return; // nothing new yet
+  if(currentTick <= lastSpawnTick) return;
   lastSpawnTick = currentTick;
 
-  // Pick shared target LENGTH for this tick using seeded random
   const lengthSeed = getSpawnSeedForTick(currentTick);
   const sharedLength = pickLengthFromSeed(lengthSeed, multiRoundScore);
   multiCurrentLength = sharedLength;
 
-  // Compute shared speed for this tick (same for all players)
   const speedSeed = getSpawnSeedForTick(currentTick + 99999);
   const esc = getEscalation(multiRoundScore);
   const sharedSpeed = (MULTI_CFG.baseSpeed + seededRand(speedSeed) * MULTI_CFG.rand) * esc.mult;
 
-  // Compute shared column for this tick — each player gets same col
   const colSeed = getSpawnSeedForTick(currentTick + 55555);
-  const sharedCol = Math.floor(seededRand(colSeed) * 3); // 3 cols in multi panes
+  const sharedCol = Math.floor(seededRand(colSeed) * 3);
 
-  // Spawn on every alive player with same length+speed+col, different word text
+  // BUG C FIX: always queue spawn for every alive player; never skip
   alive.forEach(p => {
-    if(p.falling) return; // already has a word falling
     const activeSet = new Set(p.rows.map(r=>r.text));
     const wordText = getMultiWordForPlayer(sharedLength, activeSet);
-    p.falling = { text: wordText, col: sharedCol, y: 0, speed: sharedSpeed };
-    p.spawnTimer = 0;
+    p.pendingSpawn = { text: wordText, col: sharedCol, y: 0, speed: sharedSpeed };
+
+    // Apply immediately if lane is free
+    if(!p.falling){
+      p.falling = p.pendingSpawn;
+      p.pendingSpawn = null;
+      p.spawnTimer = 0;
+    }
   });
 }
 
@@ -589,13 +573,11 @@ function pickLengthFromSeed(seed, avgScore){
   return valid[Math.floor(r * valid.length)];
 }
 
-// Pick a unique word of exact length for a specific player, avoiding their active words
 function getMultiWordForPlayer(targetLength, activeSet){
   const candidates = WORDS_BY_LENGTH[targetLength] || [];
   const available = candidates.filter(({w}) => !activeSet.has(w));
   const pool = available.length > 0 ? available : candidates;
   if(pool.length === 0){
-    // Fallback: any word close to the target length
     const fallback = WORDS_MULTI.filter(({w}) => !activeSet.has(w) && Math.abs(w.length - targetLength) <= 2);
     const fb = fallback.length > 0 ? fallback : WORDS_MULTI;
     return fb[Math.floor(Math.random() * fb.length)].w;
@@ -603,13 +585,11 @@ function getMultiWordForPlayer(targetLength, activeSet){
   return pool[Math.floor(Math.random() * pool.length)].w;
 }
 
-// Points per word in multi: based on word length
 function getMultiPts(word, combo, danger){
   const base = Math.max(5, word.length * 3);
   return Math.round(base * (1 + combo * 0.1) * (1 + danger * 0.2));
 }
 
-// Speed config for multiplayer — starts gentle, ramps aggressively
 const MULTI_CFG = { baseSpeed:1.6, rand:0.5, spawnBase:130 };
 
 function getEscalation(sc){
@@ -687,12 +667,15 @@ function applyTheme(idx){
 }
 
 // ── SPLIT SCREEN PLAYER STATE ────────────────────────────────────────────────
+// BUG C + E FIX: added pendingSpawn and landingFlash fields
 function makePlayerState(id, color, name, inputKeys) {
   return {
     id, color, name, inputKeys,
     rows: [], falling: null, typed: "", score: 0, combo: 0,
     lastEscDanger: -1, escFlashTimer: 0, escFlashLabel: "",
     spawnTimer: 0, particles: [], dead: false,
+    pendingSpawn: null,    // BUG C FIX: queued word when lane is busy
+    landingFlash: null,    // BUG E FIX: brief flash when word lands
   };
 }
 
@@ -705,7 +688,7 @@ let singleSpawnTimer = 0, singleParticles = [];
 
 let scanY = 0, frameN = 0;
 let paused = false;
-let multiForfeitConfirm = false; // multiplayer forfeit confirm overlay
+let multiForfeitConfirm = false;
 let lastMouseX = 0, lastMouseY = 0;
 
 const PAUSE_BTN_SP = {x: W-100, y: 6, w: 44, h: 44};
@@ -757,11 +740,8 @@ const PLAYER_COLORS = [C.teal, C.purple, C.amber, C.blue];
 const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
 
 // ── NETWORK: Rate-limited send state ─────────────────────────────────────────
-// FIX: Rate-limit sends to ~10 per second to prevent lag from network flooding
 let lastSendTime = 0;
-const SEND_INTERVAL_MS = 100; // 10x/sec max
-
-// FIX: Track last sent row count to avoid sending rows when nothing changed
+const SEND_INTERVAL_MS = 100;
 let lastSentRowCount = -1;
 let lastSentFallingText = null;
 
@@ -809,11 +789,9 @@ document.addEventListener("mousedown",(e)=>{
     return;
   }
 
-  // Multiplayer forfeit confirm overlay
   if(state==="game" && playerCount>1 && multiForfeitConfirm){
     const yes={x:148,y:316,w:130,h:50}, no={x:322,y:316,w:130,h:50};
     if(hit(yes,mx,my)){
-      // Mark local player as dead (forfeit)
       const me = isOnlineGame ? players[localPlayerIdx] : players[activeTypingPlayer];
       if(me) me.dead = true;
       multiForfeitConfirm = false;
@@ -830,7 +808,7 @@ document.addEventListener("mousedown",(e)=>{
     const btnY = isMultiGO ? 546 : 532;
     if(mx>80&&mx<300&&my>btnY&&my<btnY+44){
       if(isMultiGO){
-        if(myRematchVote !== null) return; // already voted
+        if(myRematchVote !== null) return;
         sfxFanfare(); castRematchVote(true);
       } else {
         sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200);
@@ -839,7 +817,7 @@ document.addEventListener("mousedown",(e)=>{
     }
     if(mx>310&&mx<530&&my>btnY&&my<btnY+44){
       if(isMultiGO){
-        if(myRematchVote !== null) return; // already voted
+        if(myRematchVote !== null) return;
         sfxTransition(); castRematchVote(false);
       } else {
         sfxTransition(); state="menu"; resetAll(); startBGM("menu");
@@ -906,7 +884,6 @@ document.addEventListener("mousedown",(e)=>{
       }
     });
   } else if(state==="lobby_wait"){
-    // BACK button — y position varies by 2P/4P, use generous range
     const is4P2 = lobby.required===4;
     const rcY2 = is4P2 ? 415 : 307;
     const diffY2 = rcY2 + 46;
@@ -915,7 +892,6 @@ document.addEventListener("mousedown",(e)=>{
     const backBtn={x:200,y:backY2,w:200,h:42};
     if(hit(backBtn,mx,my)){ leaveLobbyConfirm=true; sfxClick(); return; }
 
-    // HOST START button
     if(lobby.role==="host" && !countdownActive){
       const startBtn={x:110,y:hintY2+54,w:380,h:52};
       const enoughPlayers2 = lobby.players >= lobby.required;
@@ -948,25 +924,27 @@ document.addEventListener("mousedown",(e)=>{
     }
   }
 
-  if(state==="game" && playerCount > 1){
-    if(playerCount === 2){
-      const paneW = W / 2;
-      if(mx < paneW) activeTypingPlayer = 0;
-      else activeTypingPlayer = 1;
-    } else {
-      // 4P POV layout: left 62% = main pane (focus player), right 38% = 3 mini panes
-      const DIVX = Math.round(W * 0.62);
-      if(mx < DIVX){
-        // Clicked main pane — no switch needed, already showing focus player
-      } else {
-        // Clicked one of the 3 mini panes on the right — switch POV to that player
-        const focus = activeTypingPlayer;
-        const opponents = [0,1,2,3].filter(i => i !== focus);
-        const sph = Math.floor(H / 3);
-        const slot = Math.min(2, Math.floor(my / sph));
-        activeTypingPlayer = opponents[slot];
+  // BUG D FIX: 4P POV click handler mirrors exactly what game4P draws
+  if(state==="game" && playerCount === 2){
+    const paneW = W / 2;
+    if(mx < paneW) activeTypingPlayer = 0;
+    else activeTypingPlayer = 1;
+  } else if(state==="game" && playerCount === 4){
+    const DIVX = Math.round(W * 0.62);
+    const focus = activeTypingPlayer;
+
+    if(mx >= DIVX){
+      // Mini panes drawn in this exact order — mirror game4P's filter
+      const miniPlayers = [0,1,2,3].filter(i => i !== focus);
+      const sph = Math.floor(H / 3);
+      const slot = Math.min(miniPlayers.length - 1, Math.floor(my / sph));
+      const target = miniPlayers[slot];
+      if(target !== activeTypingPlayer){
+        activeTypingPlayer = target;
+        sfxClick();
       }
     }
+    // clicking main pane (mx < DIVX) does nothing — already focused
   }
 });
 
@@ -983,10 +961,10 @@ function generateCode(){ return Math.random().toString(36).substring(2,7).toUppe
 
 async function hostGame(){
   lobby.code = generateCode();
-  lobby.players = 1; // just host to start
+  lobby.players = 1;
   lobby.role = "host";
   lobby.diff = "medium";
-  lobbyPeers = {}; // guests only — host is tracked separately via myReady
+  lobbyPeers = {};
   myReady = false;
   lobbyReadyCount = 0;
   countdownActive = false; countdownValue = 3;
@@ -1010,12 +988,9 @@ async function hostGame(){
       });
       conn.on("close", ()=>{
         guestConns = guestConns.filter(c=>c!==conn);
-        // Remove disconnected peer from lobbyPeers by finding who owns this conn
-        // We tag each conn with the peer id when they send "join"
         if(conn._peerId) delete lobbyPeers[conn._peerId];
         lobby.players = Object.keys(lobbyPeers).length + 1;
         lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
-        // Notify remaining guests of the updated peer list
         broadcastLobby({ type:"joined", from:"__disconnect__", name:"", total:lobby.players,
           diff:lobby.diff, hostPeerId:myPlayerId,
           peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready})) });
@@ -1071,13 +1046,10 @@ function onLobbyMsg(data, fromConn){
   const { type, from, name, peers } = data;
 
   if(type==="welcome"){
-    // peers = other guests sent by host (excludes host itself and us)
     if(peers) peers.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
-    // Store host info separately — NOT in lobbyPeers
     lobby.hostName = name||"HOST";
     lobby.hostReady = data.hostReady||false;
-    lobby.hostPeerId = data.hostPeerId || from; // Fix: use explicit hostPeerId field
-    // total = other guests + host + self
+    lobby.hostPeerId = data.hostPeerId || from;
     lobby.players = Object.keys(lobbyPeers).length + 2;
     lobby.diff = data.diff || "medium";
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
@@ -1088,7 +1060,6 @@ function onLobbyMsg(data, fromConn){
   } else if(type==="join"){
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from] = { name:name||from, ready:false };
-    // Tag the connection so we can remove this peer on abrupt disconnect
     if(fromConn) fromConn._peerId = from;
     lobby.players = Object.keys(lobbyPeers).length + 1;
     broadcastLobby({ type:"joined", from, name, total:lobby.players, diff:lobby.diff,
@@ -1097,9 +1068,7 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="joined"){
     const isDisconnect = (from === "__disconnect__");
-    // update full peer list from host's authoritative peers array
     if(data.peers){
-      // Clear stale peers and rebuild from host's list
       Object.keys(lobbyPeers).forEach(id => {
         if(!data.peers.find(p=>p.id===id) && id!==myPlayerId) delete lobbyPeers[id];
       });
@@ -1109,7 +1078,6 @@ function onLobbyMsg(data, fromConn){
     } else if(!isDisconnect && !lobbyPeers[from]){
       lobbyPeers[from] = { name:name||from, ready:false };
     }
-    // Set hostPeerId from joined messages too (host always sends these)
     if(data.hostPeerId) lobby.hostPeerId = data.hostPeerId;
     lobby.players = data.total || Object.keys(lobbyPeers).length + 1;
     lobby.diff = data.diff || lobby.diff;
@@ -1120,11 +1088,9 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready = data.isReady;
-    // guests in lobbyPeers + host (self)
     lobby.players = Object.keys(lobbyPeers).length + 1;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
-    // broadcast updated ready state to all guests
     if(lobby.role==="host"){
       broadcastLobby({ type:"readystate", from, isReady:data.isReady,
         readyCount: lobbyReadyCount, total: lobby.players });
@@ -1132,7 +1098,6 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="readystate"){
     const who = data.from || from;
-    // Fix Issue 2: identify host by their actual peer ID, not the string "host"
     const isFromHost = lobby.role==="join" && who === lobby.hostPeerId;
     if(isFromHost){
       lobby.hostReady = data.isReady;
@@ -1154,77 +1119,62 @@ function onLobbyMsg(data, fromConn){
     }
 
   } else if(type==="gameseed"){
-    // Sync deterministic spawn seed from host
     multiGameSeed = data.seed;
     multiGameStartMs = data.startMs;
     lastSpawnTick = -1;
 
   } else if(type==="start"){
-    // Legacy fallback
     if(lobby.role==="join") startGame("multi", lobby.required);
 
   } else if(type==="rematchvote"){
-    // Record this peer's vote
     rematchVotes[from] = data.playAgain;
-
     if(lobby.role==="host"){
-      // Host forwards vote to all other guests so they can see status
       broadcastLobby({ type:"rematchvote", from, playAgain:data.playAgain });
-      // Check if everyone voted
       checkRematchReady();
     }
-    // If a peer voted false (leaving), remove from lobbyPeers display
     if(!data.playAgain && lobbyPeers[from]){
       delete lobbyPeers[from];
     }
 
   } else if(type==="rematchresult"){
-    // Host tells everyone the final result — go to lobby
-    // Remove leavers
     if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; });
     returnToLobby();
 
   } else if(type==="leave"){
     delete lobbyPeers[from];
-    // For host: guests + self. For guest: other guests + host + self
     lobby.players = lobby.role==="host"
       ? Object.keys(lobbyPeers).length + 1
       : Object.keys(lobbyPeers).length + 2;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length
                     + (myReady?1:0)
                     + (lobby.role==="join" && lobby.hostReady ? 1 : 0);
-    // cancel countdown if someone leaves
     if(countdownActive){ countdownActive=false; countdownValue=3; sfxMiss(); }
   }
 }
 
 function broadcastLobby(data){
-  // Send to all guests (host calls this)
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
 function sendToHost(data){
-  // Guest sends to host via hostConn
   if(hostConn){ try{ hostConn.send(data); }catch(e){} }
 }
 
 function sendLobby(data){
-  // Smart send: if host → broadcast to guests; if guest → send to host
   if(lobby.role==="host") broadcastLobby(data);
   else sendToHost(data);
 }
 
-// ── REMATCH TRACKING ─────────────────────────────────────────────────────────
-let rematchVotes = {};        // { peerId: true/false } — who voted play again
-let rematchTimeout = null;    // setTimeout handle for auto-kick
-let myRematchVote = null;     // null = not voted, true = play again, false = menu
-const REMATCH_TIMEOUT_MS = 15000; // 15 seconds to decide
-// ── REMATCH VOTING SYSTEM ────────────────────────────────────────────────────
+// ── REMATCH ──────────────────────────────────────────────────────────────────
+let rematchVotes = {};
+let rematchTimeout = null;
+let myRematchVote = null;
+const REMATCH_TIMEOUT_MS = 15000;
+
 function initRematch(){
   rematchVotes = {};
   myRematchVote = null;
   if(rematchTimeout) clearTimeout(rematchTimeout);
-  // Auto-vote "menu" if player doesn't decide in time
   rematchTimeout = setTimeout(()=>{
     if(state !== "gameover_multi" || myRematchVote !== null) return;
     castRematchVote(false);
@@ -1232,7 +1182,7 @@ function initRematch(){
 }
 
 function castRematchVote(playAgain){
-  if(myRematchVote !== null) return; // already voted
+  if(myRematchVote !== null) return;
   myRematchVote = playAgain;
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
 
@@ -1240,17 +1190,14 @@ function castRematchVote(playAgain){
   if(lobby.role==="host") broadcastLobby(msg);
   else sendToHost(msg);
 
-  // Register own vote locally
   rematchVotes[myPlayerId] = playAgain;
 
   if(!playAgain){
-    // Leaving — disconnect and go to menu
     leaveLobbyChannel();
     state="menu"; resetAll(); startBGM("menu");
     return;
   }
 
-  // Check if all peers already voted (host drives final check)
   if(lobby.role==="host") checkRematchReady();
 }
 
@@ -1260,11 +1207,9 @@ function checkRematchReady(){
   const allVoted = connectedIds.every(id => rematchVotes[id] !== undefined);
   if(!allVoted) return;
 
-  // Separate stayers from leavers
   const leaving = connectedIds.filter(id => rematchVotes[id] === false);
   leaving.forEach(id => delete lobbyPeers[id]);
 
-  // Notify all staying peers — return to lobby
   broadcastLobby({ type:"rematchresult", leaving });
   returnToLobby();
 }
@@ -1286,7 +1231,7 @@ let countdownInterval = null;
 function startCountdown(){
   countdownActive = true;
   countdownValue = 3;
-  countdownDiff = "multi"; // always mixed mode in multiplayer
+  countdownDiff = "multi";
   sfxCountdownBeep();
   broadcastLobby({ type:"countdown", value:3, diff:"multi" });
   countdownInterval = setInterval(()=>{
@@ -1301,12 +1246,6 @@ function startCountdown(){
       setTimeout(()=>startGame("multi", lobby.required), 200);
     }
   }, 1000);
-}
-
-function cancelCountdown(){
-  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
-  countdownActive = false; countdownValue = 3;
-  broadcastLobby({ type:"leave", from:"__countdown_cancel__" }); // reuse leave to reset guests
 }
 
 function leaveLobbyChannel(){
@@ -1324,19 +1263,13 @@ function isOnlineConnected(){
   return myPeer && myPeer.open;
 }
 
-// ── ONLINE GAME STATE SYNC (LAG-FIXED) ───────────────────────────────────────
+// ── ONLINE GAME STATE SYNC ────────────────────────────────────────────────────
 let isOnlineGame = false;
 let localPlayerIdx = 0;
-// Bug5 fix: session ID so stale delayed packets never affect a new game/menu
 let gameSessionId = 0;
 
-// FIX 1: Rate-limited sendGameState — max 10 sends/sec
-// FIX 2: Only send rows when row count changes (event-based)
-// FIX 3: Only send falling word text+col when a new word spawns; skip y position updates
 function sendGameState(){
   if(!isOnlineGame) return;
-
-  // Rate limit: send at most every 100ms (10x/sec)
   const now = Date.now();
   if(now - lastSendTime < SEND_INTERVAL_MS) return;
   lastSendTime = now;
@@ -1344,16 +1277,13 @@ function sendGameState(){
   const me = players[localPlayerIdx];
   if(!me) return;
 
-  // Only send rows if the count changed
   const rowsChanged = me.rows.length !== lastSentRowCount;
   if(rowsChanged) lastSentRowCount = me.rows.length;
 
-  // Only send falling word info if it's a new word (text changed)
   const currentFallingText = me.falling ? me.falling.text : null;
   const fallingChanged = currentFallingText !== lastSentFallingText;
   if(fallingChanged) lastSentFallingText = currentFallingText;
 
-  // Build minimal payload — skip unchanged data
   const data = {
     type: "gamestate",
     score: me.score,
@@ -1361,20 +1291,14 @@ function sendGameState(){
     dead: me.dead,
   };
 
-  // Only include rows when changed
-  if(rowsChanged){
-    data.rows = me.rows;
-  }
+  if(rowsChanged){ data.rows = me.rows; }
 
-  // Only include falling word when it changes (new word spawned or cleared)
   if(fallingChanged){
     if(me.falling){
-      // Send text + col so remote can start animating from top
       data.falling = {
         text: me.falling.text,
         col: me.falling.col,
         speed: me.falling.speed,
-        // Send y only on spawn (it'll be near top), remote animates locally after
         y: me.falling.y,
       };
     } else {
@@ -1387,7 +1311,6 @@ function sendGameState(){
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
 }
 
-// FIX 3: Remote falling word is animated locally — no y-position overrides after spawn
 function onGameMsg(data){
   if(data.type !== "gamestate") return;
   const oppIdx = localPlayerIdx === 0 ? 1 : 0;
@@ -1398,34 +1321,24 @@ function onGameMsg(data){
   opp.combo = data.combo;
   opp.dead  = data.dead;
 
-  // Only update rows if the host sent them (means they changed)
-  if(data.rows !== undefined){
-    opp.rows = data.rows;
-  }
+  if(data.rows !== undefined){ opp.rows = data.rows; }
 
-  // Only update falling word when a new one spawns or clears
   if(data.fallingChanged){
     if(data.falling){
-      // New word — set it up and let local physics animate it smoothly
       opp.falling = {
         text: data.falling.text,
         col: data.falling.col,
         y: data.falling.y,
-        // Use received speed for accuracy, or fallback to default
         speed: data.falling.speed || 2.5,
       };
     } else {
-      // Word was destroyed/landed
       opp.falling = null;
     }
   }
-  // NOTE: If fallingChanged is NOT set, we do NOT touch opp.falling at all.
-  // The local canvas animates the remote falling word smoothly between updates.
 
   if(opp.dead && !players[localPlayerIdx].dead){
     const sessionAtCall = gameSessionId;
     setTimeout(()=>{
-      // Only fire if still in the same game session
       if(gameSessionId === sessionAtCall && state === "game"){
         state="gameover_multi";
       }
@@ -1458,12 +1371,10 @@ function startGame(diff, numPlayers){
   myReady = false; lobbyReadyCount = 0;
   countdownActive = false; countdownValue = 3;
   if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
-  // Set deterministic seed for multiplayer word spawning
   if(numPlayers > 1){
-    multiGameSeed = Math.floor(Date.now() % 999983); // prime mod for variety
+    multiGameSeed = Math.floor(Date.now() % 999983);
     multiGameStartMs = Date.now();
     lastSpawnTick = -1;
-    // Broadcast seed to all guests so they use the same sequence
     if(lobby.role==="host"){
       broadcastLobby({ type:"gameseed", seed:multiGameSeed, startMs:multiGameStartMs });
     }
@@ -1479,7 +1390,7 @@ function startGame(diff, numPlayers){
 }
 
 function resetAll(){
-  gameSessionId++; // Bug5: invalidate stale network callbacks from previous session
+  gameSessionId++;
   singleRows=[]; singleFalling=null; singleTyped=""; singleScore=0; singleCombo=0;
   singleLastEscDanger=-1; singleEscFlashTimer=0; singleSpawnTimer=0; singleParticles=[];
   singleTotalKeys=0; singleCorrectWords=0; singleWrongSubmits=0;
@@ -1495,14 +1406,11 @@ function resetAll(){
   multiForfeitConfirm = false;
   rematchVotes = {}; myRematchVote = null;
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
-  // Reset shared multiplayer spawn coordinator
   multiSpawnTimer = 0;
   multiCurrentLength = 3;
   multiSpawnInterval = 130;
   multiRoundScore = 0;
   lastSpawnTick = -1;
-  // Note: multiGameSeed and multiGameStartMs are set in startGame, not reset here
-  // Reset network send tracking
   lastSendTime = 0;
   lastSentRowCount = -1;
   lastSentFallingText = null;
@@ -1534,7 +1442,6 @@ document.addEventListener("keydown",(e)=>{
   if(!audioReady){ initAudio(); audioCtx.resume().then(()=>{ startBGM("menu"); }); }
   else if(audioCtx && audioCtx.state === "suspended"){ audioCtx.resume(); }
 
-  // SPACE = ready toggle in lobby (all players)
   if(state==="lobby_wait" && e.key===" " && !countdownActive){
     e.preventDefault();
     myReady = !myReady;
@@ -1543,17 +1450,14 @@ document.addEventListener("keydown",(e)=>{
     lobbyReadyCount = guestReady + (myReady?1:0) + hostReadyVal;
 
     if(lobby.role==="host"){
-      // Host broadcasts own ready state to all guests
       broadcastLobby({ type:"readystate", from:myPlayerId, isReady:myReady,
         readyCount:lobbyReadyCount, total:lobby.players });
     } else {
-      // Guest sends ready state to host
       sendToHost({ type:"ready", from:myPlayerId, isReady:myReady });
     }
     if(myReady){ sfxLobbyReady(); } else { sfxBack(); }
     return;
   }
-  // ENTER = host starts game (when all ready)
   if(state==="lobby_wait" && e.key==="Enter" && lobby.role==="host" && !countdownActive){
     const canStart = lobby.players >= lobby.required && lobbyReadyCount >= lobby.players;
     if(canStart){ sfxFanfare(); startCountdown(); }
@@ -1601,7 +1505,6 @@ document.addEventListener("keydown",(e)=>{
     else if(e.key==="Enter") singleSubmit();
     else if(/^[a-zA-Z]$/.test(e.key)){ singleTyped+=e.key.toUpperCase(); singleTotalKeys++; sfxType(); }
   } else {
-    // ESC opens forfeit confirm in multiplayer
     if(e.key==="Escape"){
       multiForfeitConfirm = !multiForfeitConfirm;
       if(multiForfeitConfirm){
@@ -1648,6 +1551,7 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++;
+    // BUG A FIX: p.falling.x is now set by drawPane each frame
     spawnParticles(p.particles, p.falling.x ?? 40, p.falling.y, p.color, 10);
     p.combo>2?sfxCombo():sfxDestroy(); p.falling=null; p.spawnTimer=0; p.typed=""; return;
   }
@@ -1656,7 +1560,7 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++; p.rows.splice(i,1); p.combo>2?sfxCombo():sfxDestroy();
-    spawnParticles(p.particles, 40 + (p.id||0) * 10, 300, p.color, 8);
+    spawnParticles(p.particles, p.falling ? p.falling.x ?? 40 : 40, 300, p.color, 8);
   } else { p.combo=0; sfxMiss(); }
   p.typed="";
 }
@@ -1727,89 +1631,19 @@ function multiMenu(){ centered("MULTIPLAYER MODE",110,C.teal,16,true); multiButt
 function hostJoinMenu(){ centered("HOST OR JOIN",110,C.green,18,true); hostJoinButtons.forEach((b,i)=>pixelBox(b,hjColors[i])); }
 
 // ── LOBBY ─────────────────────────────────────────────────────────────────────
-function drawLobbyPlayerPanel(x, y, w, h, color, joined, label) {
-  const t = Date.now() * 0.002;
-  ctx.fillStyle = "rgba(4,4,20,0.92)"; ctx.fillRect(x, y, w, h);
-  if (joined) {
-    ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 12; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h); ctx.shadowBlur = 0;
-  } else {
-    const alpha = 0.35 + 0.35 * Math.sin(t * 2);
-    ctx.strokeStyle = `rgba(${hexRgb(color)},${alpha.toFixed(2)})`; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
-  }
-  const s = 7; ctx.fillStyle = joined ? color : `rgba(${hexRgb(color)},0.5)`;
-  ctx.fillRect(x,y,s,2);ctx.fillRect(x,y,2,s);ctx.fillRect(x+w-s,y,s,2);ctx.fillRect(x+w-2,y,2,s);
-  ctx.fillRect(x,y+h-2,s,2);ctx.fillRect(x,y+h-s,2,s);ctx.fillRect(x+w-s,y+h-2,s,2);ctx.fillRect(x+w-2,y+h-s,2,s);
-  ctx.strokeStyle = `rgba(${hexRgb(color)},0.04)`; ctx.lineWidth = 1;
-  for (let gx = x + 10; gx < x + w; gx += 14){ ctx.beginPath(); ctx.moveTo(gx, y); ctx.lineTo(gx, y + h); ctx.stroke(); }
-  for (let gy = y + 10; gy < y + h; gy += 14){ ctx.beginPath(); ctx.moveTo(x, gy); ctx.lineTo(x + w, gy); ctx.stroke(); }
-  if (joined) {
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.15)`; ctx.fillRect(x, y, w, 28);
-    ctx.fillStyle = color; ctx.fillRect(x, y + 26, w, 2);
-    ctx.font = `9px ${PX}`; const lw = ctx.measureText(label).width;
-    ctx.shadowColor = color; ctx.shadowBlur = 10; ctx.fillStyle = color; ctx.fillText(label, x + (w - lw) / 2, y + 18); ctx.shadowBlur = 0;
-    const rdx = x + w / 2, rdy = y + h / 2 - 10;
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.12)`; ctx.fillRect(x + 10, rdy - 20, w - 20, 36);
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.strokeRect(x + 10, rdy - 20, w - 20, 36);
-    ctx.font = `11px ${PX}`; const rw = ctx.measureText("READY").width;
-    ctx.shadowColor = color; ctx.shadowBlur = 14; ctx.fillStyle = color; ctx.fillText("READY", rdx - rw / 2, rdy + 6); ctx.shadowBlur = 0;
-    if (Math.floor(Date.now() / 400) % 2 === 0){
-      ctx.beginPath(); ctx.arc(x + 18, y + 14, 4, 0, Math.PI * 2); ctx.fillStyle = C.green; ctx.shadowColor = C.green; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0;
-    }
-    const blockT = (Date.now() % 2000) / 2000, blockY = y + 36 + blockT * (h - 80), blockX = x + w / 2 - 8;
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.35)`; ctx.fillRect(blockX, blockY, 16, 16);
-    ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(blockX, blockY, 16, 16);
-    const stackColors = [color, C.blue, C.purple, C.teal];
-    for (let row = 0; row < 3; row++){
-      for (let col = 0; col < Math.floor(w / 18); col++){
-        const bx2 = x + 2 + col * 18, by2 = y + h - 18 - row * 18;
-        if (bx2 + 16 > x + w - 2) continue;
-        const bc = stackColors[(row + col) % stackColors.length];
-        ctx.fillStyle = `rgba(${hexRgb(bc)},0.18)`; ctx.fillRect(bx2, by2, 16, 16);
-        ctx.strokeStyle = `rgba(${hexRgb(bc)},0.45)`; ctx.lineWidth = 1; ctx.strokeRect(bx2, by2, 16, 16);
-      }
-    }
-  } else {
-    ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(x, y, w, 28);
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.3)`; ctx.fillRect(x, y + 26, w, 2);
-    ctx.font = `9px ${PX}`; const lw = ctx.measureText(label).width;
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.5)`; ctx.fillText(label, x + (w - lw) / 2, y + 18);
-    const dots = ".".repeat(Math.floor(Date.now() / 500) % 4), waitText = "WAITING" + dots;
-    ctx.font = `8px ${PX}`; const ww = ctx.measureText(waitText).width;
-    ctx.fillStyle = `rgba(${hexRgb(color)},0.55)`; ctx.fillText(waitText, x + (w - ww) / 2, y + h / 2 + 4);
-    const iconSize = 22, iconX = x + w / 2 - iconSize / 2, iconY = y + h / 2 - iconSize - 14;
-    ctx.strokeStyle = `rgba(${hexRgb(color)},0.25)`; ctx.lineWidth = 2; ctx.strokeRect(iconX, iconY, iconSize, iconSize);
-    ctx.beginPath(); ctx.moveTo(iconX + iconSize/2, iconY + 4); ctx.lineTo(iconX + iconSize/2, iconY + iconSize - 4);
-    ctx.moveTo(iconX + 4, iconY + iconSize/2); ctx.lineTo(iconX + iconSize - 4, iconY + iconSize/2);
-    ctx.strokeStyle = `rgba(${hexRgb(color)},0.2)`; ctx.stroke();
-    for (let row = 0; row < 3; row++){
-      for (let col = 0; col < Math.floor(w / 18); col++){
-        const bx2 = x + 2 + col * 18, by2 = y + h - 18 - row * 18;
-        if (bx2 + 16 > x + w - 2) continue;
-        ctx.strokeStyle = `rgba(${hexRgb(color)},0.08)`; ctx.lineWidth = 1; ctx.strokeRect(bx2, by2, 16, 16);
-      }
-    }
-  }
-}
-
 function lobbyWait(){
   const is4P = lobby.required === 4;
   ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(0,0,W,H);
-  const dots=".".repeat((Math.floor(Date.now()/500)%4));
   ctx.fillStyle="#05051a"; ctx.fillRect(30,80,540,560);
   ctx.strokeStyle=C.teal; ctx.shadowColor=C.teal; ctx.shadowBlur=16; ctx.lineWidth=2; ctx.strokeRect(30,80,540,560); ctx.shadowBlur=0;
   [[30,80],[566,80],[30,636],[566,636]].forEach(([px2,py2])=>{ ctx.fillStyle=C.teal; ctx.fillRect(px2-1,py2-1,10,2); ctx.fillRect(px2-1,py2-1,2,10); });
 
-  // Title
   const titleTxt = countdownActive ? "GET READY!" : "LOBBY";
   ctx.font=`11px ${PX}`; pxDraw(titleTxt,W/2-ctx.measureText(titleTxt).width/2,112,countdownActive?C.amber:C.teal,11,true);
 
-  // Room code
   ctx.fillStyle="#070720"; ctx.fillRect(80,124,440,52); ctx.strokeStyle=C.green; ctx.lineWidth=2; ctx.strokeRect(80,124,440,52);
   pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",165,C.green,18,true);
 
-  // Player panels
-  // For HOST: slot 0 = me (host), slots 1+ = guests in lobbyPeers
-  // For GUEST: slot 0 = host (from lobby.hostName), slot 1 = me, slots 2+ = other guests
   const guestList = Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name||id,ready:p.ready||false,isMe:false}));
   let allPeers;
   if(lobby.role==="host"){
@@ -1837,30 +1671,25 @@ function lobbyWait(){
     const joined=!!p;
     const clr=PLAYER_COLORS[i]||C.teal;
 
-    // Panel bg
     ctx.fillStyle="rgba(4,4,20,0.92)"; ctx.fillRect(px2,py2,panelW,panelH);
     ctx.strokeStyle=joined?(p.ready?C.green:clr):`rgba(${hexRgb(clr)},0.3)`;
     if(joined&&p.ready){ ctx.shadowColor=C.green; ctx.shadowBlur=10; }
     ctx.lineWidth=2; ctx.strokeRect(px2,py2,panelW,panelH); ctx.shadowBlur=0;
-    // corner accents
     const cs=6; ctx.fillStyle=joined?clr:`rgba(${hexRgb(clr)},0.3)`;
     ctx.fillRect(px2,py2,cs,2);ctx.fillRect(px2,py2,2,cs);
     ctx.fillRect(px2+panelW-cs,py2,cs,2);ctx.fillRect(px2+panelW-2,py2,2,cs);
     ctx.fillRect(px2,py2+panelH-2,cs,2);ctx.fillRect(px2,py2+panelH-cs,2,cs);
     ctx.fillRect(px2+panelW-cs,py2+panelH-2,cs,2);ctx.fillRect(px2+panelW-2,py2+panelH-cs,2,cs);
 
-    // Header bar
     ctx.fillStyle=`rgba(${hexRgb(clr)},0.15)`; ctx.fillRect(px2,py2,panelW,24);
-    ctx.font=`7px ${PX}`; const plabel=`P${i+1}${p\&\&p.isMe?" (YOU)":""}`;
+    ctx.font=`7px ${PX}`; const plabel=`P${i+1}${p&&p.isMe?" (YOU)":""}`;
     const plw=ctx.measureText(plabel).width;
     ctx.fillStyle=clr; ctx.fillText(plabel,px2+(panelW-plw)/2,py2+16);
 
     if(joined){
-      // Player name
       ctx.font=`9px ${PX}`; const nw=ctx.measureText(p.name).width;
       ctx.shadowColor=clr; ctx.shadowBlur=6; ctx.fillStyle=clr;
       ctx.fillText(p.name,px2+(panelW-nw)/2,py2+46); ctx.shadowBlur=0;
-      // Ready status badge
       const rdyTxt=p.ready?"✓ READY":"NOT READY";
       const rdyClr=p.ready?C.green:"#556677";
       ctx.font=`7px ${PX}`; const rdyw=ctx.measureText(rdyTxt).width;
@@ -1870,7 +1699,6 @@ function lobbyWait(){
       if(p.ready){ ctx.shadowColor=C.green; ctx.shadowBlur=8; }
       ctx.fillStyle=rdyClr; ctx.fillText(rdyTxt,px2+(panelW-rdyw)/2,py2+71); ctx.shadowBlur=0;
     } else {
-      // Empty slot
       const wdots=".".repeat(Math.floor(Date.now()/500)%4);
       ctx.font=`8px ${PX}`; const ww=ctx.measureText("WAITING"+wdots).width;
       ctx.fillStyle=`rgba(${hexRgb(clr)},0.35)`;
@@ -1878,16 +1706,13 @@ function lobbyWait(){
     }
   }
 
-  // Ready count bar
   const rcY = is4P ? 415 : 307;
   ctx.fillStyle="#070720"; ctx.fillRect(40,rcY,520,36); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,rcY,520,36);
-  const readyTotal = lobbyReadyCount + (myReady?0:0); // already includes myReady
   const rcTxt=`${lobbyReadyCount} / ${lobby.players} READY`;
   ctx.font=`9px ${PX}`; const rcw=ctx.measureText(rcTxt).width;
   const allRdy = lobbyReadyCount>=lobby.required && lobby.players>=lobby.required;
   pxDraw(rcTxt,W/2-rcw/2,rcY+24,allRdy?C.green:C.amber,9,allRdy);
 
-  // Mixed mode label (no difficulty picker in multiplayer)
   const diffY = rcY + 46;
   ctx.fillStyle="#070720"; ctx.fillRect(40,diffY,520,46); ctx.strokeStyle=C.dim; ctx.lineWidth=1; ctx.strokeRect(40,diffY,520,46);
   ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.12)`; ctx.fillRect(40,diffY,520,46);
@@ -1899,28 +1724,22 @@ function lobbyWait(){
   const mslw=ctx.measureText(msub).width;
   ctx.fillStyle="#556677"; ctx.fillText(msub, W/2-mslw/2, diffY+36);
 
-  // SPACE TO READY hint (all players) or READY status
   const hintY = diffY + 58;
   const rdyHintClr = myReady ? C.green : C.teal;
   ctx.fillStyle=`rgba(${hexRgb(rdyHintClr)},0.12)`; ctx.fillRect(40,hintY,520,44);
   ctx.strokeStyle=myReady?C.green:`rgba(${hexRgb(C.teal)},0.4)`; ctx.lineWidth=2; ctx.strokeRect(40,hintY,520,44);
   if(myReady){
-    // Blinking "READY" state
-    if(Math.floor(Date.now()/500)%2===0){
-      ctx.shadowColor=C.green; ctx.shadowBlur=12;
-    }
+    if(Math.floor(Date.now()/500)%2===0){ ctx.shadowColor=C.green; ctx.shadowBlur=12; }
     ctx.font=`9px ${PX}`; const rt="✓  YOU ARE READY  —  PRESS SPACE TO UNREADY";
     const rw=ctx.measureText(rt).width;
     ctx.fillStyle=C.green; ctx.fillText(rt,W/2-rw/2,hintY+27); ctx.shadowBlur=0;
   } else {
     ctx.font=`8px ${PX}`; const ht="PRESS  SPACE  TO  READY  UP";
     const hw=ctx.measureText(ht).width;
-    // Animated space bar icon
     const t2=Date.now()*0.004; const pulse=0.6+0.4*Math.sin(t2);
     ctx.fillStyle=`rgba(${hexRgb(C.teal)},${pulse.toFixed(2)})`; ctx.fillText(ht,W/2-hw/2,hintY+27);
   }
 
-  // HOST START button (host only)
   if(lobby.role==="host" && !countdownActive){
     const enoughPlayers = lobby.players >= lobby.required;
     const allReady = lobbyReadyCount >= lobby.players && enoughPlayers;
@@ -1943,20 +1762,15 @@ function lobbyWait(){
     ctx.fillRect(startBtn.x+startBtn.w-s,startBtn.y+startBtn.h-2,s,2);ctx.fillRect(startBtn.x+startBtn.w-2,startBtn.y+startBtn.h-s,2,s);
     ctx.font=`8px ${PX}`; const stw=ctx.measureText(startTxt).width;
     ctx.fillStyle=startClr; ctx.fillText(startTxt,W/2-stw/2,startBtn.y+startBtn.h/2+4); ctx.shadowBlur=0;
-
-    // BACK button (smaller, below START)
     pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
   } else if(!countdownActive){
-    // Guest: just waiting for host to start
     ctx.fillStyle="#070720"; ctx.fillRect(110,hintY+54,380,52); ctx.strokeStyle="#334466"; ctx.lineWidth=1; ctx.strokeRect(110,hintY+54,380,52);
     const wdots2=".".repeat(Math.floor(Date.now()/500)%4);
     ctx.font=`8px ${PX}`; const wt2="WAITING FOR HOST TO START"+wdots2; const wt2w=ctx.measureText(wt2).width;
     ctx.fillStyle="#445566"; ctx.fillText(wt2,W/2-wt2w/2,hintY+85);
-    // BACK button
     pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
   }
 
-  // Online indicator
   const isOnline = isOnlineConnected();
   const netClr = isOnline ? C.green : C.amber;
   const netTxt = isOnline ? "● ONLINE" : "● CONNECTING";
@@ -1966,7 +1780,6 @@ function lobbyWait(){
   ctx.shadowColor=netClr; ctx.shadowBlur=isOnline?6:0;
   ctx.fillStyle=netClr; ctx.fillText(netTxt,W-ntw-16,97); ctx.shadowBlur=0;
 
-  // Leave lobby confirm overlay
   if(leaveLobbyConfirm){
     ctx.fillStyle="rgba(0,0,0,0.75)"; ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#06061a"; ctx.fillRect(120,220,360,220); ctx.strokeStyle=C.red; ctx.shadowColor=C.red; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(120,220,360,220); ctx.shadowBlur=0;
@@ -1974,21 +1787,18 @@ function lobbyWait(){
     pixelBox({text:"YES",x:160,y:345,w:120,h:50},C.red); pixelBox({text:"NO",x:320,y:345,w:120,h:50},C.green);
   }
 
-  // COUNTDOWN OVERLAY
   if(countdownActive){
     ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#05051a"; ctx.fillRect(140,220,320,250);
     ctx.strokeStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=24; ctx.lineWidth=2; ctx.strokeRect(140,220,320,250); ctx.shadowBlur=0;
     ctx.fillStyle=`rgba(${hexRgb(C.amber)},0.2)`; ctx.fillRect(142,222,316,24);
     centered("STARTING IN",260,C.amber,10,false);
-    // Big countdown number with pulse
     const pulse=0.85+0.15*Math.sin(Date.now()*0.012);
-    ctx.font=`${Math.round(72\*pulse)}px ${PX}`;
+    ctx.font=`${Math.round(72*pulse)}px ${PX}`;
     const numStr=`${countdownValue}`;
     const nw=ctx.measureText(numStr).width;
     ctx.shadowColor=C.amber; ctx.shadowBlur=30*pulse; ctx.fillStyle=C.amber;
     ctx.fillText(numStr,W/2-nw/2,370); ctx.shadowBlur=0;
-    // Diff label
     ctx.font=`8px ${PX}`; const dw=ctx.measureText("MIXED MODE").width;
     pxDraw("MIXED MODE",W/2-dw/2,418,C.purple,8,true);
     centered("GET READY TO TYPE!",448,"#6677aa",7,false);
@@ -2026,7 +1836,7 @@ function game(){
     ctx.font=`13px ${PX}`; const tw=ctx.measureText(r.text).width;
     const dangerRatio=singleRows.length/14;
     const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
-    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio\*0.1})`; ctx.fillRect(wx-8,wy-22,tw+16,28);
+    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-8,wy-22,tw+16,28);
     ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
     ctx.lineWidth=1; ctx.strokeRect(wx-8,wy-22,tw+16,28);
     pxDraw(r.text,wx,wy,rowClr,13,true);
@@ -2120,7 +1930,7 @@ function game(){
   }
 }
 
-// ── SPLIT SCREEN GAME ────────────────────────────────────────────────────────
+// ── SPLIT SCREEN PANE ────────────────────────────────────────────────────────
 function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   const pBottom = py + ph - 44;
   const pTop    = py + 36;
@@ -2138,24 +1948,44 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   if(esc.danger>=3){ const pulse=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(px,py,pw,ph); }
   else if(esc.danger===2){ const pulse=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(px,py,pw,ph); }
 
-  const PLAY_H = ph - 36 - 44; // usable play area height within pane
+  // BUG B FIX: play area height derived from actual pane geometry
+  const PLAY_H = ph - 36 - 44;
+  // Reference lane height for speed normalization (single player full lane)
+  const FULL_LANE_H = BOTTOM - TOP; // 560px
 
   const dynInterval = isMulti ? multiSpawnInterval : Math.max(30, cfg.spawnBase - p.score * 0.3);
+
   if(!isRemote){
     if(isMulti){
-      // Multi: coordinator already assigned p.falling — just advance physics
+      // Multi: coordinator assigned p.falling — advance physics with height scaling
       if(p.falling){
-        p.falling.y += p.falling.speed;
+        // BUG B FIX: normalize speed to pane height so fall duration is consistent
+        const heightRatio = PLAY_H / FULL_LANE_H;
+        p.falling.y += p.falling.speed * heightRatio;
         const limitRel = PLAY_H - p.rows.length * pRowH;
         if(p.falling.y >= limitRel){
           p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
           spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, pTop + limitRel, C.amber, 5);
-          p.falling = null; p.spawnTimer = 0;
-          if(p.rows.length > 12) p.dead = true;
+
+          // BUG E FIX: capture landing flash before clearing p.falling
+          p.landingFlash = {
+            text: p.falling.text,
+            col: p.falling.col,
+            y: limitRel,
+            timer: 8,
+          };
+
+          // BUG C FIX: flush pendingSpawn immediately on landing
+          p.falling = p.pendingSpawn || null;
+          p.pendingSpawn = null;
+          p.spawnTimer = 0;
+
+          // BUG B FIX: dead threshold derived from actual pane height
+          const maxRows = Math.max(3, Math.floor((PLAY_H - 20) / pRowH));
+          if(p.rows.length > maxRows) p.dead = true;
         }
       }
     } else {
-      // Single player: spawn and advance physics independently
       p.spawnTimer++;
       if(!p.falling && p.spawnTimer >= dynInterval){
         const esc2 = getEscalation(p.score);
@@ -2175,22 +2005,26 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
         if(p.falling.y >= limitRel){
           p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
           spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, pTop + limitRel, C.amber, 5);
-          p.falling = null; p.spawnTimer = 0;
-          if(p.rows.length > 12) p.dead = true;
+          p.landingFlash = { text: p.falling.text, col: p.falling.col, y: limitRel, timer: 8 };
+          p.falling = p.pendingSpawn || null;
+          p.pendingSpawn = null;
+          p.spawnTimer = 0;
+          const maxRows = Math.max(3, Math.floor((PLAY_H - 20) / pRowH));
+          if(p.rows.length > maxRows) p.dead = true;
         }
       }
     }
   } else {
-    // Remote player: animate falling word locally for smooth display
+    // Remote player: animate falling word locally
     if(p.falling){
-      p.falling.y += p.falling.speed;
+      const heightRatio = PLAY_H / FULL_LANE_H;
+      p.falling.y += p.falling.speed * heightRatio;
       const limitRel = PLAY_H - p.rows.length * pRowH;
-      if(p.falling.y >= limitRel){
-        p.falling = null;
-      }
+      if(p.falling.y >= limitRel){ p.falling = null; }
     }
   }
-  // Draw stacked rows (pBottom is absolute canvas coord, correct as-is)
+
+  // Draw stacked rows
   for(let i=0;i<p.rows.length;i++){
     const r=p.rows[i];
     const wx = px + pCols[r.col % pCols.length];
@@ -2198,17 +2032,18 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.font=`10px ${PX}`; const tw=ctx.measureText(r.text).width;
     const dangerRatio=p.rows.length/12;
     const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
-    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio\*0.1})`; ctx.fillRect(wx-5,wy-16,tw+10,20);
+    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-5,wy-16,tw+10,20);
     ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
     ctx.lineWidth=1; ctx.strokeRect(wx-5,wy-16,tw+10,20);
     pxDraw(r.text,wx,wy,rowClr,10,true);
   }
-  // Draw falling word — Bug9: p.falling.y is pane-relative, add pTop for absolute canvas y
+
+  // Draw falling word — BUG A FIX: store fx back onto p.falling
   if(p.falling){
     const fx = px + pCols[p.falling.col % pCols.length];
+    p.falling.x = fx; // BUG A FIX: persist so multiSubmit can read it
     const fy = pTop + p.falling.y;
     ctx.font=`11px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
-    // In multi: color by word length (green=short → red=long)
     let wordClr;
     if(isMulti){
       const len = p.falling.text.length;
@@ -2219,12 +2054,30 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,fy-18,tw+10,22);
     ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,fy-18,tw+10,22);
     pxDraw(p.falling.text,fx,fy,wordClr,11,true);
-    // Length badge in multi — tiny number in top-right corner of word box
     if(isMulti){
       const lenStr = `${p.falling.text.length}`;
       ctx.font=`6px ${PX}`; const lbw=ctx.measureText(lenStr).width;
       ctx.fillStyle=`rgba(${hexRgb(wordClr)},0.85)`; ctx.fillRect(fx+tw+5,fy-18,lbw+4,10);
       ctx.fillStyle="#000"; ctx.fillText(lenStr, fx+tw+7, fy-10);
+    }
+  }
+
+  // BUG E FIX: draw landing flash
+  if(p.landingFlash){
+    if(!p.dead) p.landingFlash.timer--;
+    if(p.landingFlash.timer <= 0){
+      p.landingFlash = null;
+    } else {
+      const lf = p.landingFlash;
+      const fx = px + pCols[lf.col % pCols.length];
+      const fy = pTop + lf.y;
+      const alpha = lf.timer / 8;
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.font = `11px ${PX}`;
+      const tw = ctx.measureText(lf.text).width;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(fx - 5, fy - 18, tw + 10, 22);
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -2235,6 +2088,7 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   }
   ctx.globalAlpha=1;
 
+  // Header bar
   ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(px, py, pw, 36);
   ctx.fillStyle=isActive ? p.color : `rgba(${hexRgb(p.color)},0.4)`;
   ctx.fillRect(px, py+34, pw, 2);
@@ -2263,6 +2117,7 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.lineWidth=2; ctx.strokeRect(px+1,py+1,pw-2,ph-2);
   }
 
+  // Input bar
   ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(px, py+ph-44, pw, 44);
   ctx.fillStyle=isActive ? p.color : `rgba(${hexRgb(p.color)},0.3)`;
   ctx.fillRect(px, py+ph-44, pw, 2);
@@ -2289,12 +2144,28 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     ctx.fillText(hint, px+pw/2-hw/2, py+ph-14);
   }
 
+  // Dead overlay
   if(p.dead){
     ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(px,py,pw,ph);
     ctx.font=`11px ${PX}`; const dw=ctx.measureText("GAME OVER").width;
     pxDraw("GAME OVER",px+pw/2-dw/2,py+ph/2-10,C.red,11,true);
     ctx.font=`8px ${PX}`; const sw=ctx.measureText(`SCORE ${p.score}`).width;
     pxDraw(`SCORE ${p.score}`,px+pw/2-sw/2,py+ph/2+14,C.amber,8,false);
+  }
+
+  // BUG F FIX: "Last standing" banner — purely visual, no game-end timer
+  if(lastStanding && lastStanding === p && !p.dead){
+    const alpha = Math.min(1, (180 - lastStandingTimer) / 30);
+    ctx.globalAlpha = alpha * (0.7 + 0.3 * Math.sin(Date.now() * 0.006));
+    ctx.font = `9px ${PX}`;
+    const bannerTxt = "★ LAST STANDING ★";
+    const bw = ctx.measureText(bannerTxt).width;
+    ctx.fillStyle = C.amber;
+    ctx.shadowColor = C.amber;
+    ctx.shadowBlur = 12;
+    ctx.fillText(bannerTxt, px + pw/2 - bw/2, py + 28);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
   }
 
   if(p.escFlashTimer > 0){
@@ -2310,12 +2181,15 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   ctx.restore();
 }
 
-// ── SHARED MULTI SPAWN COORDINATOR ───────────────────────────────────────────
-// Runs once per frame before drawing any pane.
-// Advances the shared timer; when it fires, picks a new target length so all
-// panes spawn a word of identical length but different text.
+// ── SHARED MULTI SPAWN STATE ──────────────────────────────────────────────────
+let multiSpawnTimer = 0;
+let multiCurrentLength = 3;
+let multiSpawnInterval = 130;
+let multiRoundScore = 0;
+let lastStanding = null;
+let lastStandingTimer = 0;
+
 function autoSwitchFromDead(){
-  // Bug4: if the currently active player is dead, jump to next alive player
   if(!players[activeTypingPlayer] || players[activeTypingPlayer].dead){
     const nextAlive = players.findIndex((p,i) => !p.dead && i !== activeTypingPlayer);
     if(nextAlive !== -1) activeTypingPlayer = nextAlive;
@@ -2347,53 +2221,44 @@ function game2P(){
 function game4P(){
   autoSwitchFromDead();
   tickMultiSpawnCoordinator();
-  // POV layout: the "focus" player (activeTypingPlayer) gets a large left pane
-  // The other 3 players are stacked as mini-panes on the right
-  const DIVX  = Math.round(W * 0.62);   // vertical divider x
-  const DIV_W = 2;
-  const mpw   = DIVX - DIV_W;           // main pane width
-  const mph   = H;                       // main pane height
-  const spw   = W - DIVX - DIV_W;       // small pane width
-  const sph   = Math.floor(H / 3);      // small pane height (3 stacked)
 
-  // Cols/rowH scale with pane size
+  const DIVX  = Math.round(W * 0.62);
+  const DIV_W = 2;
+  const mpw   = DIVX - DIV_W;
+  const mph   = H;
+  const spw   = W - DIVX - DIV_W;
+  const sph   = Math.floor(H / 3);
+
   const mainCols = [18, 90, 162, 234];
   const mainRowH = 40;
   const miniCols = [8, 44, 80];
   const miniRowH = 22;
 
   const focus = activeTypingPlayer;
-  // The 3 opponents in order (excluding focus)
+  // BUG D FIX: opponents list mirrors the click handler's miniPlayers exactly
   const opponents = [0,1,2,3].filter(i => i !== focus);
 
-  // Draw dividers first
   ctx.fillStyle = "#0a0a22";
   ctx.fillRect(DIVX, 0, DIV_W, H);
 
-  // Animate divider glow
   const t = Date.now() * 0.003;
   const alpha = 0.4 + 0.25 * Math.sin(t);
-  ctx.fillStyle = `rgba(${hexRgb(players\[focus].color)},${alpha.toFixed(2)})`;
+  ctx.fillStyle = `rgba(${hexRgb(players[focus].color)},${alpha.toFixed(2)})`;
   ctx.fillRect(DIVX, 0, DIV_W, H);
 
-  // Horizontal dividers between mini panes
   for(let i = 1; i < 3; i++){
     const dy = i * sph;
     ctx.fillStyle = "#0a0a22"; ctx.fillRect(DIVX + DIV_W, dy - 1, spw, 2);
     ctx.fillStyle = `rgba(80,80,180,0.35)`; ctx.fillRect(DIVX + DIV_W, dy - 1, spw, 2);
   }
 
-  // Draw main (focus) pane — large, left side
   drawPane(players[focus], 0, 0, mpw, mph, mainCols, mainRowH, true, false);
 
-  // Draw 3 mini opponent panes — stacked right side
   opponents.forEach((oppIdx, slot) => {
     const sy = slot * sph;
-    const isThisActive = false; // opponent panes never get typing focus
-    drawPane(players[oppIdx], DIVX + DIV_W, sy, spw, sph, miniCols, miniRowH, isThisActive, false);
+    drawPane(players[oppIdx], DIVX + DIV_W, sy, spw, sph, miniCols, miniRowH, false, false);
   });
 
-  // "YOU" label on main pane top
   const focusP = players[focus];
   ctx.font = `7px ${PX}`;
   const youTxt = "◀ YOUR LANE";
@@ -2401,7 +2266,6 @@ function game4P(){
   ctx.fillStyle = `rgba(${hexRgb(focusP.color)},0.55)`;
   ctx.fillText(youTxt, mpw/2 - yw/2, H - 4);
 
-  // TAB hint on right side bottom
   ctx.font = `6px ${PX}`;
   const tabTxt = "TAB = switch POV";
   const tw2 = ctx.measureText(tabTxt).width;
@@ -2417,17 +2281,13 @@ function drawMultiForfeitOverlay(){
   ctx.fillStyle="rgba(0,0,0,0.75)"; ctx.fillRect(0,0,W,H);
   ctx.fillStyle="#06061a"; ctx.fillRect(120,200,360,260);
   ctx.strokeStyle=C.red; ctx.shadowColor=C.red; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(120,200,360,260); ctx.shadowBlur=0;
-  // corner accents
   const acs=9; ctx.fillStyle=C.red;
   [[120,200],[476,200],[120,456],[476,456]].forEach(([ax,ay])=>{ ctx.fillRect(ax,ay,acs,2); ctx.fillRect(ax,ay,2,acs); });
-  // title bar
   ctx.fillStyle=`rgba(${hexRgb(C.red)},0.22)`; ctx.fillRect(122,202,356,24);
   centered("FORFEIT MATCH?",248,C.red,13,true);
   ctx.fillStyle=`rgba(${hexRgb(C.red)},0.3)`; ctx.fillRect(140,232,320,1);
-  // subtitle
   ctx.font=`8px ${PX}`; const sub="You will be eliminated!"; const sw=ctx.measureText(sub).width;
   ctx.fillStyle="#8899bb"; ctx.fillText(sub, W/2-sw/2, 258);
-  // player name shown
   const me = isOnlineGame ? players[localPlayerIdx] : players[activeTypingPlayer];
   if(me){
     ctx.font=`9px ${PX}`; const nm=me.name; const nw2=ctx.measureText(nm).width;
@@ -2435,23 +2295,22 @@ function drawMultiForfeitOverlay(){
     ctx.fillText(nm, W/2-nw2/2, 286); ctx.shadowBlur=0;
   }
   ctx.fillStyle=`rgba(${hexRgb(C.red)},0.2)`; ctx.fillRect(140,300,320,1);
-  // YES / NO buttons
   const yesHov=hit({x:148,y:316,w:130,h:50},lastMouseX,lastMouseY);
   const noHov =hit({x:322,y:316,w:130,h:50},lastMouseX,lastMouseY);
   pixelBox({text:"FORFEIT",x:148,y:316,w:130,h:50}, yesHov?C.red:"#882233");
   pixelBox({text:"CANCEL", x:322,y:316,w:130,h:50}, noHov?C.green:C.teal);
-  // ESC hint
   if(Math.floor(Date.now()/600)%2===0){
     ctx.font=`7px ${PX}`; const hint="ESC to cancel"; const hw=ctx.measureText(hint).width;
     ctx.fillStyle="#2a3a55"; ctx.fillText(hint, W/2-hw/2, 390);
   }
 }
 
-
-
+// BUG F FIX: checkMultiGameOver rewritten — timer is display-only, survivor plays until their stack fills
 function checkMultiGameOver(){
-  if(state !== "game") return; // Bug2: don't run if state already changed this frame
+  if(state !== "game") return;
   const alive = players.filter(p=>!p.dead);
+
+  // All dead — instant game over, no winner
   if(alive.length === 0){
     lastStanding = null;
     state = "gameover_multi";
@@ -2459,24 +2318,31 @@ function checkMultiGameOver(){
     if(playerCount > 1) initRematch();
     return;
   }
+
+  // Exactly one survivor — announce them but let them keep playing
   if(alive.length === 1 && players.length > 1){
-    // Bug3: exactly one survivor — set lastStanding only if not already set
-    // (avoids overwriting if they were already the last one standing)
     if(!lastStanding || lastStanding !== alive[0]){
       lastStanding = alive[0];
-      lastStandingTimer = 120; // 2 seconds at 60fps
+      lastStandingTimer = 180; // purely for the visual banner fade-in
+      sfxFanfare();            // BUG F FIX: audio feedback on becoming last standing
     }
-  }
-  if(lastStanding && !lastStanding.dead){
-    lastStandingTimer--;
-    if(lastStandingTimer <= 0){
+
+    // Tick banner timer down (visual only)
+    if(lastStandingTimer > 0) lastStandingTimer--;
+
+    // Game ends only when survivor's own stack fills — drawPane sets dead=true
+    if(lastStanding.dead){
       state = "gameover_multi";
       stopBGM();
       if(playerCount > 1) initRematch();
     }
-  } else if(lastStanding && lastStanding.dead){
-    // Bug3: somehow lastStanding died (shouldn't happen but guard it)
+    return;
+  }
+
+  // More than one alive — clear stale lastStanding
+  if(alive.length > 1){
     lastStanding = null;
+    lastStandingTimer = 0;
   }
 }
 
@@ -2500,8 +2366,7 @@ function gameover_multi(){
     const y=305+i*52;
     const rankClr=i===0?C.amber:i===1?"#aaaacc":i===2?"#cc8833":C.dim+"ff";
     ctx.font=`8px ${PX}`;
-    const rankStr=`${i+1}.`;
-    pxDraw(rankStr, 110, y, rankClr, 8, i===0);
+    pxDraw(`${i+1}.`, 110, y, rankClr, 8, i===0);
     pxDraw(p.name, 140, y, p.color, 8, false);
     const sc=`${p.score} pts`; ctx.font=`8px ${PX}`; const sw=ctx.measureText(sc).width;
     pxDraw(sc, 500-sw, y, i===0?C.amber:C.teal, 8, i===0);
@@ -2509,44 +2374,23 @@ function gameover_multi(){
   ctx.fillStyle=C.dim; ctx.fillRect(100,520,400,1);
 
   if(playerCount > 1){
-    // Show who voted and countdown timer
-    const totalPeers = Object.keys(lobbyPeers).length + 1; // +1 for self
-    const votedCount = Object.keys(rematchVotes).length;
-    const timeLeft = rematchTimeout ? REMATCH_TIMEOUT_MS : 0;
-
-    // Vote status bar
-    ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(80,526,440,16);
-    ctx.font=`7px ${PX}`;
     const voteStr = myRematchVote === null
-      ? `DECIDE NOW — ${REMATCH\_TIMEOUT\_MS/1000}s TIMEOUT`
+      ? `DECIDE NOW — ${REMATCH_TIMEOUT_MS/1000}s TIMEOUT`
       : myRematchVote
         ? "✓ YOU VOTED PLAY AGAIN — WAITING FOR OTHERS..."
         : "✗ YOU CHOSE MENU";
     const voteClr = myRematchVote===true ? C.green : myRematchVote===false ? C.red : C.amber;
+    ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(80,526,440,16);
+    ctx.font=`7px ${PX}`;
     const vsw=ctx.measureText(voteStr).width;
-    if(myRematchVote===null && Math.floor(Date.now()/400)%2===0){
-      ctx.shadowColor=C.amber; ctx.shadowBlur=6;
-    }
+    if(myRematchVote===null && Math.floor(Date.now()/400)%2===0){ ctx.shadowColor=C.amber; ctx.shadowBlur=6; }
     ctx.fillStyle=voteClr; ctx.fillText(voteStr,W/2-vsw/2,537); ctx.shadowBlur=0;
 
-    // Buttons — grayed out after voting
     const alreadyVoted = myRematchVote !== null;
     const gmPlayHov = !alreadyVoted && hit({x:80,y:546,w:220,h:44},lastMouseX,lastMouseY);
     const gmMenuHov = !alreadyVoted && hit({x:310,y:546,w:220,h:44},lastMouseX,lastMouseY);
-    pixelBox({text:"PLAY AGAIN",x:80,y:546,w:220,h:44},
-      alreadyVoted ? "#223322" : gmPlayHov ? C.green : C.teal);
-    pixelBox({text:"MENU",x:310,y:546,w:220,h:44},
-      alreadyVoted ? "#332222" : gmMenuHov ? C.amber : C.purple);
-
-    // Show individual vote status of each player
-    const allPlayers = [...players].sort((a,b)=>b.score-a.score);
-    allPlayers.forEach((p,i)=>{
-      const px2 = 80 + i*(440/allPlayers.length);
-      const voted = rematchVotes[p.id!==undefined ? myPlayerId : p.id];
-      // just show a dot per player
-    });
-
-    // Hint
+    pixelBox({text:"PLAY AGAIN",x:80,y:546,w:220,h:44}, alreadyVoted ? "#223322" : gmPlayHov ? C.green : C.teal);
+    pixelBox({text:"MENU",x:310,y:546,w:220,h:44}, alreadyVoted ? "#332222" : gmMenuHov ? C.amber : C.purple);
     ctx.font=`6px ${PX}`; const hint="Rematch returns all players to lobby";
     const hw=ctx.measureText(hint).width;
     ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,598);
@@ -2645,7 +2489,6 @@ function drawJoinGame(){
 
 function drawOptions(){
   centered("OPTIONS",110,C.purple,20,true);
-
   pxDraw("AUDIO",100,188,"#6677aa",9,false);
   ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,196,400,1);
   const son=soundEnabled, tclr=son?C.teal:"#445566";
@@ -2749,7 +2592,7 @@ function confirmUsername(){
   const val=usernameInput.trim();
   if(val.length===0){ usernameErr="NAME CANNOT BE EMPTY!"; sfxMiss(); return; }
   username=val;
-  usernameInput=""; // Bug8: clear input after confirmed so it's fresh next time
+  usernameInput="";
   usernameErr="";
   sfxFanfare();
   setTimeout(()=>{ startBGM("menu"); state="menu"; lastState="splash"; }, 350);
@@ -2763,7 +2606,6 @@ const HTP_PAGES = 3;
 
 function drawHowToPlay(){
   const t = Date.now() * 0.002;
-
   ctx.fillStyle = "rgba(0,5,20,0.88)"; ctx.fillRect(0, 0, W, 68);
   ctx.fillStyle = C.teal; ctx.fillRect(0, 66, W, 2);
   centered("HOW TO PLAY", 44, C.teal, 16, true);
@@ -2792,7 +2634,7 @@ function drawHowToPlay(){
     pixelBox({text:"NEXT >", x:W-140, y:arrowY, w:110, h:44}, rhov ? C.green : C.blue);
   }
 
-  ctx.font = `7px ${PX}`; const pl = `${howToPlayPage+1} / ${HTP\_PAGES}`; const plw = ctx.measureText(pl).width;
+  ctx.font = `7px ${PX}`; const pl = `${howToPlayPage+1} / ${HTP_PAGES}`; const plw = ctx.measureText(pl).width;
   pxDraw(pl, W/2-plw/2, arrowY+28, "#334466", 7, false);
 
   const bhov = lastMouseX > 160 && lastMouseX < 440 && lastMouseY > H-54 && lastMouseY < H-8;
