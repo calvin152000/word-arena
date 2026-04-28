@@ -767,20 +767,25 @@ document.addEventListener("mousedown",(e)=>{
   }
 
   if(state==="gameover_multi"){
-    if(mx>80&&mx<300&&my>532&&my<576){
-      sfxTransition();
-      if(playerCount > 1){
-        // Go back to lobby for rematch instead of directly restarting
-        returnToLobby();
+    const isMultiGO = playerCount > 1;
+    const btnY = isMultiGO ? 546 : 532;
+    if(mx>80&&mx<300&&my>btnY&&my<btnY+44){
+      if(isMultiGO){
+        if(myRematchVote !== null) return; // already voted
+        sfxFanfare(); castRematchVote(true);
       } else {
-        setTimeout(()=>startGame(difficulty, playerCount),200);
+        sfxFanfare(); setTimeout(()=>startGame(difficulty, playerCount),200);
       }
       return;
     }
-    if(mx>310&&mx<530&&my>532&&my<576){
-      sfxTransition();
-      if(playerCount > 1) leaveLobbyChannel();
-      state="menu"; resetAll(); startBGM("menu"); return;
+    if(mx>310&&mx<530&&my>btnY&&my<btnY+44){
+      if(isMultiGO){
+        if(myRematchVote !== null) return; // already voted
+        sfxTransition(); castRematchVote(false);
+      } else {
+        sfxTransition(); state="menu"; resetAll(); startBGM("menu");
+      }
+      return;
     }
   }
 
@@ -1091,19 +1096,26 @@ function onLobbyMsg(data, fromConn){
     // Legacy fallback
     if(lobby.role==="join") startGame("multi", lobby.required);
 
-  } else if(type==="playagain"){
-    // A peer clicked Play Again — return everyone to lobby
-    myReady = false;
-    lobbyReadyCount = 0;
-    countdownActive = false; countdownValue = 3;
-    if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
-    // Reset all peers' ready flags
-    Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
-    if(lobby.role==="join") lobby.hostReady = false;
-    // If host receives playagain from a guest, broadcast to all other guests
-    if(lobby.role==="host") broadcastLobby({ type:"playagain", from });
-    state = "lobby_wait";
-    startBGM("menu");
+  } else if(type==="rematchvote"){
+    // Record this peer's vote
+    rematchVotes[from] = data.playAgain;
+
+    if(lobby.role==="host"){
+      // Host forwards vote to all other guests so they can see status
+      broadcastLobby({ type:"rematchvote", from, playAgain:data.playAgain });
+      // Check if everyone voted
+      checkRematchReady();
+    }
+    // If a peer voted false (leaving), remove from lobbyPeers display
+    if(!data.playAgain && lobbyPeers[from]){
+      delete lobbyPeers[from];
+    }
+
+  } else if(type==="rematchresult"){
+    // Host tells everyone the final result — go to lobby
+    // Remove leavers
+    if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; });
+    returnToLobby();
 
   } else if(type==="leave"){
     delete lobbyPeers[from];
@@ -1135,28 +1147,72 @@ function sendLobby(data){
   else sendToHost(data);
 }
 
-// ── REMATCH: return to lobby without disconnecting ────────────────────────────
+// ── REMATCH TRACKING ─────────────────────────────────────────────────────────
+let rematchVotes = {};        // { peerId: true/false } — who voted play again
+let rematchTimeout = null;    // setTimeout handle for auto-kick
+let myRematchVote = null;     // null = not voted, true = play again, false = menu
+const REMATCH_TIMEOUT_MS = 15000; // 15 seconds to decide
+// ── REMATCH VOTING SYSTEM ────────────────────────────────────────────────────
+function initRematch(){
+  rematchVotes = {};
+  myRematchVote = null;
+  if(rematchTimeout) clearTimeout(rematchTimeout);
+  // Auto-vote "menu" if player doesn't decide in time
+  rematchTimeout = setTimeout(()=>{
+    if(state !== "gameover_multi" || myRematchVote !== null) return;
+    castRematchVote(false);
+  }, REMATCH_TIMEOUT_MS);
+}
+
+function castRematchVote(playAgain){
+  if(myRematchVote !== null) return; // already voted
+  myRematchVote = playAgain;
+  if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
+
+  const msg = { type:"rematchvote", from:myPlayerId, playAgain };
+  if(lobby.role==="host") broadcastLobby(msg);
+  else sendToHost(msg);
+
+  // Register own vote locally
+  rematchVotes[myPlayerId] = playAgain;
+
+  if(!playAgain){
+    // Leaving — disconnect and go to menu
+    leaveLobbyChannel();
+    state="menu"; resetAll(); startBGM("menu");
+    return;
+  }
+
+  // Check if all peers already voted (host drives final check)
+  if(lobby.role==="host") checkRematchReady();
+}
+
+function checkRematchReady(){
+  if(lobby.role !== "host") return;
+  const connectedIds = Object.keys(lobbyPeers);
+  const allVoted = connectedIds.every(id => rematchVotes[id] !== undefined);
+  if(!allVoted) return;
+
+  // Separate stayers from leavers
+  const leaving = connectedIds.filter(id => rematchVotes[id] === false);
+  leaving.forEach(id => delete lobbyPeers[id]);
+
+  // Notify all staying peers — return to lobby
+  broadcastLobby({ type:"rematchresult", leaving });
+  returnToLobby();
+}
+
 function returnToLobby(){
-  // Reset ready state for new round
   myReady = false;
   lobbyReadyCount = 0;
   countdownActive = false; countdownValue = 3;
   if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
-
-  // Reset lobbyPeers ready flags
-  Object.keys(lobbyPeers).forEach(id => {
-    if(lobbyPeers[id]) lobbyPeers[id].ready = false;
-  });
+  Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
   if(lobby.role==="join") lobby.hostReady = false;
-
-  // Tell all peers to return to lobby
-  if(lobby.role==="host") broadcastLobby({ type:"playagain", from:myPlayerId });
-  else sendToHost({ type:"playagain", from:myPlayerId });
-
+  lobby.players = Object.keys(lobbyPeers).length + 1;
   state = "lobby_wait";
   startBGM("menu");
 }
-
 
 let countdownInterval = null;
 
@@ -1361,6 +1417,8 @@ function resetAll(){
   activeTypingPlayer = 0;
   lastStanding = null; lastStandingTimer = 0;
   multiForfeitConfirm = false;
+  rematchVotes = {}; myRematchVote = null;
+  if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
   // Reset shared multiplayer spawn coordinator
   multiSpawnTimer = 0;
   multiCurrentLength = 3;
@@ -2337,10 +2395,10 @@ function checkMultiGameOver(){
   if(state !== "game") return; // Bug2: don't run if state already changed this frame
   const alive = players.filter(p=>!p.dead);
   if(alive.length === 0){
-    // Bug3: all dead (e.g. simultaneous forfeit) — no winner
     lastStanding = null;
     state = "gameover_multi";
     stopBGM();
+    if(playerCount > 1) initRematch();
     return;
   }
   if(alive.length === 1 && players.length > 1){
@@ -2356,6 +2414,7 @@ function checkMultiGameOver(){
     if(lastStandingTimer <= 0){
       state = "gameover_multi";
       stopBGM();
+      if(playerCount > 1) initRematch();
     }
   } else if(lastStanding && lastStanding.dead){
     // Bug3: somehow lastStanding died (shouldn't happen but guard it)
@@ -2390,16 +2449,54 @@ function gameover_multi(){
     pxDraw(sc, 500-sw, y, i===0?C.amber:C.teal, 8, i===0);
   });
   ctx.fillStyle=C.dim; ctx.fillRect(100,520,400,1);
-  const gmPlayHov=(lastMouseX>80&&lastMouseX<300&&lastMouseY>532&&lastMouseY<576);
-  const gmMenuHov=(lastMouseX>310&&lastMouseX<530&&lastMouseY>532&&lastMouseY<576);
-  const rematchLabel = playerCount>1 ? "REMATCH" : "PLAY AGAIN";
-  pixelBox({text:rematchLabel,x:80,y:532,w:220,h:44},gmPlayHov?C.green:C.teal);
-  pixelBox({text:"MENU",x:310,y:532,w:220,h:44},gmMenuHov?C.amber:C.purple);
-  // Hint for multiplayer
-  if(playerCount>1){
-    ctx.font=`7px ${PX}`; const hint="Rematch returns all players to lobby";
+
+  if(playerCount > 1){
+    // Show who voted and countdown timer
+    const totalPeers = Object.keys(lobbyPeers).length + 1; // +1 for self
+    const votedCount = Object.keys(rematchVotes).length;
+    const timeLeft = rematchTimeout ? REMATCH_TIMEOUT_MS : 0;
+
+    // Vote status bar
+    ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(80,526,440,16);
+    ctx.font=`7px ${PX}`;
+    const voteStr = myRematchVote === null
+      ? `DECIDE NOW — ${REMATCH_TIMEOUT_MS/1000}s TIMEOUT`
+      : myRematchVote
+        ? "✓ YOU VOTED PLAY AGAIN — WAITING FOR OTHERS..."
+        : "✗ YOU CHOSE MENU";
+    const voteClr = myRematchVote===true ? C.green : myRematchVote===false ? C.red : C.amber;
+    const vsw=ctx.measureText(voteStr).width;
+    if(myRematchVote===null && Math.floor(Date.now()/400)%2===0){
+      ctx.shadowColor=C.amber; ctx.shadowBlur=6;
+    }
+    ctx.fillStyle=voteClr; ctx.fillText(voteStr,W/2-vsw/2,537); ctx.shadowBlur=0;
+
+    // Buttons — grayed out after voting
+    const alreadyVoted = myRematchVote !== null;
+    const gmPlayHov = !alreadyVoted && hit({x:80,y:546,w:220,h:44},lastMouseX,lastMouseY);
+    const gmMenuHov = !alreadyVoted && hit({x:310,y:546,w:220,h:44},lastMouseX,lastMouseY);
+    pixelBox({text:"PLAY AGAIN",x:80,y:546,w:220,h:44},
+      alreadyVoted ? "#223322" : gmPlayHov ? C.green : C.teal);
+    pixelBox({text:"MENU",x:310,y:546,w:220,h:44},
+      alreadyVoted ? "#332222" : gmMenuHov ? C.amber : C.purple);
+
+    // Show individual vote status of each player
+    const allPlayers = [...players].sort((a,b)=>b.score-a.score);
+    allPlayers.forEach((p,i)=>{
+      const px2 = 80 + i*(440/allPlayers.length);
+      const voted = rematchVotes[p.id!==undefined ? myPlayerId : p.id];
+      // just show a dot per player
+    });
+
+    // Hint
+    ctx.font=`6px ${PX}`; const hint="Rematch returns all players to lobby";
     const hw=ctx.measureText(hint).width;
-    ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,582);
+    ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,598);
+  } else {
+    const gmPlayHov=(lastMouseX>80&&lastMouseX<300&&lastMouseY>532&&lastMouseY<576);
+    const gmMenuHov=(lastMouseX>310&&lastMouseX<530&&lastMouseY>532&&lastMouseY<576);
+    pixelBox({text:"PLAY AGAIN",x:80,y:532,w:220,h:44},gmPlayHov?C.green:C.teal);
+    pixelBox({text:"MENU",x:310,y:532,w:220,h:44},gmMenuHov?C.amber:C.purple);
   }
 }
 
