@@ -128,6 +128,9 @@ const ROW_H = 40;
 const COLS = [80, 200, 320, 440];
 const PX = "'Press Start 2P', monospace";
 
+// Reference lane height used for normalising y to a 0-1 ratio
+const FULL_LANE_H = BOTTOM - TOP; // 560px
+
 let state = "splash";
 let difficulty = null;
 let username = "";
@@ -539,18 +542,17 @@ function tickMultiSpawnCoordinator(){
 
   const speedSeed = getSpawnSeedForTick(currentTick + 99999);
   const esc = getEscalation(multiRoundScore);
+  // Speed stored as a ratio of FULL_LANE_H pixels per frame — normalised
   const sharedSpeed = (MULTI_CFG.baseSpeed + seededRand(speedSeed) * MULTI_CFG.rand) * esc.mult;
 
   const colSeed = getSpawnSeedForTick(currentTick + 55555);
   const sharedCol = Math.floor(seededRand(colSeed) * 3);
 
-  // BUG C FIX: always queue spawn for every alive player; never skip
   alive.forEach(p => {
     const activeSet = new Set(p.rows.map(r=>r.text));
     const wordText = getMultiWordForPlayer(sharedLength, activeSet);
-    p.pendingSpawn = { text: wordText, col: sharedCol, y: 0, speed: sharedSpeed };
+    p.pendingSpawn = { text: wordText, col: sharedCol, yRatio: 0, speed: sharedSpeed };
 
-    // Apply immediately if lane is free
     if(!p.falling){
       p.falling = p.pendingSpawn;
       p.pendingSpawn = null;
@@ -667,15 +669,14 @@ function applyTheme(idx){
 }
 
 // ── SPLIT SCREEN PLAYER STATE ────────────────────────────────────────────────
-// BUG C + E FIX: added pendingSpawn and landingFlash fields
 function makePlayerState(id, color, name, inputKeys) {
   return {
     id, color, name, inputKeys,
     rows: [], falling: null, typed: "", score: 0, combo: 0,
     lastEscDanger: -1, escFlashTimer: 0, escFlashLabel: "",
     spawnTimer: 0, particles: [], dead: false,
-    pendingSpawn: null,    // BUG C FIX: queued word when lane is busy
-    landingFlash: null,    // BUG E FIX: brief flash when word lands
+    pendingSpawn: null,
+    landingFlash: null,
   };
 }
 
@@ -741,7 +742,7 @@ const PLAYER_NAMES  = ["P1", "P2", "P3", "P4"];
 
 // ── NETWORK: Rate-limited send state ─────────────────────────────────────────
 let lastSendTime = 0;
-const SEND_INTERVAL_MS = 100;
+const SEND_INTERVAL_MS = 50; // Increased frequency for smoother position sync
 let lastSentRowCount = -1;
 let lastSentFallingText = null;
 
@@ -924,7 +925,6 @@ document.addEventListener("mousedown",(e)=>{
     }
   }
 
-  // BUG D FIX: 4P POV click handler mirrors exactly what game4P draws
   if(state==="game" && playerCount === 2){
     const paneW = W / 2;
     if(mx < paneW) activeTypingPlayer = 0;
@@ -934,7 +934,6 @@ document.addEventListener("mousedown",(e)=>{
     const focus = activeTypingPlayer;
 
     if(mx >= DIVX){
-      // Mini panes drawn in this exact order — mirror game4P's filter
       const miniPlayers = [0,1,2,3].filter(i => i !== focus);
       const sph = Math.floor(H / 3);
       const slot = Math.min(miniPlayers.length - 1, Math.floor(my / sph));
@@ -944,7 +943,6 @@ document.addEventListener("mousedown",(e)=>{
         sfxClick();
       }
     }
-    // clicking main pane (mx < DIVX) does nothing — already focused
   }
 });
 
@@ -1293,19 +1291,21 @@ function sendGameState(){
 
   if(rowsChanged){ data.rows = me.rows; }
 
-  if(fallingChanged){
-    if(me.falling){
-      data.falling = {
-        text: me.falling.text,
-        col: me.falling.col,
-        speed: me.falling.speed,
-        y: me.falling.y,
-      };
-    } else {
-      data.falling = null;
-    }
-    data.fallingChanged = true;
+  // Always send falling position so opponent pane stays in sync
+  if(me.falling){
+    data.falling = {
+      text: me.falling.text,
+      col: me.falling.col,
+      speed: me.falling.speed,
+      // ── KEY FIX: transmit as a 0-1 ratio of FULL_LANE_H ──
+      yRatio: me.falling.yRatio !== undefined
+        ? me.falling.yRatio
+        : me.falling.y / FULL_LANE_H,
+    };
+  } else {
+    data.falling = null;
   }
+  data.fallingChanged = fallingChanged;
 
   if(hostConn){ try{ hostConn.send(data); }catch(e){} }
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
@@ -1323,17 +1323,16 @@ function onGameMsg(data){
 
   if(data.rows !== undefined){ opp.rows = data.rows; }
 
-  if(data.fallingChanged){
-    if(data.falling){
-      opp.falling = {
-        text: data.falling.text,
-        col: data.falling.col,
-        y: data.falling.y,
-        speed: data.falling.speed || 2.5,
-      };
-    } else {
-      opp.falling = null;
-    }
+  // Always update falling from network — yRatio keeps panes in sync
+  if(data.falling){
+    opp.falling = {
+      text: data.falling.text,
+      col: data.falling.col,
+      speed: data.falling.speed || 2.5,
+      yRatio: data.falling.yRatio !== undefined ? data.falling.yRatio : 0,
+    };
+  } else {
+    opp.falling = null;
   }
 
   if(opp.dead && !players[localPlayerIdx].dead){
@@ -1551,8 +1550,7 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++;
-    // BUG A FIX: p.falling.x is now set by drawPane each frame
-    spawnParticles(p.particles, p.falling.x ?? 40, p.falling.y, p.color, 10);
+    spawnParticles(p.particles, p.falling.x ?? 40, p.falling.y ?? 40, p.color, 10);
     p.combo>2?sfxCombo():sfxDestroy(); p.falling=null; p.spawnTimer=0; p.typed=""; return;
   }
   const i=p.rows.findIndex(r=>r.text===val);
@@ -1560,7 +1558,7 @@ function multiSubmit(p){
     const esc=getEscalation(p.score);
     const pts=getMultiPts(val, p.combo, esc.danger);
     p.score+=pts; p.combo++; p.rows.splice(i,1); p.combo>2?sfxCombo():sfxDestroy();
-    spawnParticles(p.particles, p.falling ? p.falling.x ?? 40 : 40, 300, p.color, 8);
+    spawnParticles(p.particles, p.falling ? (p.falling.x ?? 40) : 40, 300, p.color, 8);
   } else { p.combo=0; sfxMiss(); }
   p.typed="";
 }
@@ -1931,6 +1929,12 @@ function game(){
 }
 
 // ── SPLIT SCREEN PANE ────────────────────────────────────────────────────────
+// KEY FIX: All falling-word positions are stored as yRatio (0-1, fraction of
+// FULL_LANE_H = 560px). Physics advance yRatio each frame. When drawing, we
+// multiply yRatio * PLAY_H to get the pixel position inside the pane.
+// This means a word at 50% of the way down on a full-size pane is ALSO drawn
+// at 50% of the way down on a mini pane — perfect visual sync.
+
 function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   const pBottom = py + ph - 44;
   const pTop    = py + 36;
@@ -1938,8 +1942,6 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   ctx.save();
   ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
 
-  const isMulti = playerCount > 1;
-  const cfg = isMulti ? MULTI_CFG : (DIFF_CFG[difficulty]||DIFF_CFG.easy);
   const esc = getEscalation(p.score);
 
   if(esc.danger > p.lastEscDanger){
@@ -1948,79 +1950,50 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   if(esc.danger>=3){ const pulse=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(px,py,pw,ph); }
   else if(esc.danger===2){ const pulse=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(px,py,pw,ph); }
 
-  // BUG B FIX: play area height derived from actual pane geometry
+  // PLAY_H: usable vertical space between header and input bar
   const PLAY_H = ph - 36 - 44;
-  // Reference lane height for speed normalization (single player full lane)
-  const FULL_LANE_H = BOTTOM - TOP; // 560px
 
-  const dynInterval = isMulti ? multiSpawnInterval : Math.max(30, cfg.spawnBase - p.score * 0.3);
+  const dynInterval = Math.max(30, MULTI_CFG.spawnBase - p.score * 0.3);
 
   if(!isRemote){
-    if(isMulti){
-      // Multi: coordinator assigned p.falling — advance physics with height scaling
-      if(p.falling){
-        // BUG B FIX: normalize speed to pane height so fall duration is consistent
-        const heightRatio = PLAY_H / FULL_LANE_H;
-        p.falling.y += p.falling.speed * heightRatio;
-        const limitRel = PLAY_H - p.rows.length * pRowH;
-        if(p.falling.y >= limitRel){
-          p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
-          spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, pTop + limitRel, C.amber, 5);
+    if(p.falling){
+      // Advance yRatio by speed/FULL_LANE_H so 1 unit = crossing full 560px
+      p.falling.yRatio = (p.falling.yRatio || 0) + p.falling.speed / FULL_LANE_H;
+      const limitRatio = (PLAY_H - p.rows.length * pRowH) / PLAY_H;
+      if(p.falling.yRatio >= limitRatio){
+        p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
+        spawnParticles(p.particles,
+          px + pCols[p.falling.col % pCols.length] + 20,
+          pTop + limitRatio * PLAY_H,
+          C.amber, 5);
 
-          // BUG E FIX: capture landing flash before clearing p.falling
-          p.landingFlash = {
-            text: p.falling.text,
-            col: p.falling.col,
-            y: limitRel,
-            timer: 8,
-          };
+        p.landingFlash = {
+          text: p.falling.text,
+          col: p.falling.col,
+          yRatio: limitRatio,
+          timer: 8,
+        };
 
-          // BUG C FIX: flush pendingSpawn immediately on landing
-          p.falling = p.pendingSpawn || null;
-          p.pendingSpawn = null;
-          p.spawnTimer = 0;
-
-          // BUG B FIX: dead threshold derived from actual pane height
-          const maxRows = Math.max(3, Math.floor((PLAY_H - 20) / pRowH));
-          if(p.rows.length > maxRows) p.dead = true;
-        }
-      }
-    } else {
-      p.spawnTimer++;
-      if(!p.falling && p.spawnTimer >= dynInterval){
-        const esc2 = getEscalation(p.score);
-        const speed = (cfg.baseSpeed + Math.random()*cfg.rand) * esc2.mult;
-        const col = Math.floor(Math.random() * pCols.length);
-        const pool2 = WORDS[difficulty]||WORDS.easy;
-        const activeSet = new Set(p.rows.map(r=>r.text));
-        if(p.falling) activeSet.add(p.falling.text);
-        const avail2 = pool2.filter(w=>!activeSet.has(w));
-        const src2 = avail2.length>0?avail2:pool2;
-        p.falling = { text: src2[Math.floor(Math.random()*src2.length)], col, y: 0, speed };
+        p.falling = p.pendingSpawn || null;
+        p.pendingSpawn = null;
         p.spawnTimer = 0;
-      }
-      if(p.falling){
-        p.falling.y += p.falling.speed;
-        const limitRel = PLAY_H - p.rows.length * pRowH;
-        if(p.falling.y >= limitRel){
-          p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
-          spawnParticles(p.particles, px + pCols[p.falling.col % pCols.length] + 20, pTop + limitRel, C.amber, 5);
-          p.landingFlash = { text: p.falling.text, col: p.falling.col, y: limitRel, timer: 8 };
-          p.falling = p.pendingSpawn || null;
-          p.pendingSpawn = null;
-          p.spawnTimer = 0;
-          const maxRows = Math.max(3, Math.floor((PLAY_H - 20) / pRowH));
-          if(p.rows.length > maxRows) p.dead = true;
-        }
+
+        const maxRows = Math.max(3, Math.floor((PLAY_H - 20) / pRowH));
+        if(p.rows.length > maxRows) p.dead = true;
       }
     }
   } else {
-    // Remote player: animate falling word locally
+    // Remote player: yRatio is kept authoritative from network messages.
+    // We still advance it locally between network ticks for smooth animation,
+    // but only by a tiny interpolation amount so it never races ahead.
     if(p.falling){
-      const heightRatio = PLAY_H / FULL_LANE_H;
-      p.falling.y += p.falling.speed * heightRatio;
-      const limitRel = PLAY_H - p.rows.length * pRowH;
-      if(p.falling.y >= limitRel){ p.falling = null; }
+      const limitRatio = (PLAY_H - p.rows.length * pRowH) / PLAY_H;
+      // Local extrapolation — keeps it smooth but caps at limit
+      p.falling.yRatio = Math.min(
+        (p.falling.yRatio || 0) + p.falling.speed / FULL_LANE_H,
+        Math.max(limitRatio - 0.001, p.falling.yRatio || 0)
+      );
+      if(p.falling.yRatio >= limitRatio){ p.falling = null; }
     }
   }
 
@@ -2038,31 +2011,33 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     pxDraw(r.text,wx,wy,rowClr,10,true);
   }
 
-  // Draw falling word — BUG A FIX: store fx back onto p.falling
+  // Draw falling word using yRatio → pixel position within THIS pane
   if(p.falling){
     const fx = px + pCols[p.falling.col % pCols.length];
-    p.falling.x = fx; // BUG A FIX: persist so multiSubmit can read it
-    const fy = pTop + p.falling.y;
+    // ── KEY FIX: pixel y = pTop + ratio * PLAY_H ──
+    const fyPx = pTop + (p.falling.yRatio || 0) * PLAY_H;
+
+    // Persist screen-space coords so multiSubmit particle positions work
+    p.falling.x = fx;
+    p.falling.y = fyPx;
+
     ctx.font=`11px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
     let wordClr;
-    if(isMulti){
-      const len = p.falling.text.length;
-      wordClr = len <= 3 ? C.green : len <= 5 ? C.teal : len <= 8 ? C.amber : C.red;
-    } else {
-      wordClr = esc.danger>=3?C.red:esc.danger>=2?C.amber:p.color;
-    }
-    ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,fy-18,tw+10,22);
-    ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,fy-18,tw+10,22);
-    pxDraw(p.falling.text,fx,fy,wordClr,11,true);
-    if(isMulti){
-      const lenStr = `${p.falling.text.length}`;
-      ctx.font=`6px ${PX}`; const lbw=ctx.measureText(lenStr).width;
-      ctx.fillStyle=`rgba(${hexRgb(wordClr)},0.85)`; ctx.fillRect(fx+tw+5,fy-18,lbw+4,10);
-      ctx.fillStyle="#000"; ctx.fillText(lenStr, fx+tw+7, fy-10);
-    }
+    const len = p.falling.text.length;
+    wordClr = len <= 3 ? C.green : len <= 5 ? C.teal : len <= 8 ? C.amber : C.red;
+
+    ctx.fillStyle=`rgba(0,180,255,0.10)`; ctx.fillRect(fx-5,fyPx-18,tw+10,22);
+    ctx.strokeStyle=`rgba(0,200,255,0.45)`; ctx.lineWidth=1; ctx.strokeRect(fx-5,fyPx-18,tw+10,22);
+    pxDraw(p.falling.text,fx,fyPx,wordClr,11,true);
+
+    // Word length badge
+    const lenStr = `${p.falling.text.length}`;
+    ctx.font=`6px ${PX}`; const lbw=ctx.measureText(lenStr).width;
+    ctx.fillStyle=`rgba(${hexRgb(wordClr)},0.85)`; ctx.fillRect(fx+tw+5,fyPx-18,lbw+4,10);
+    ctx.fillStyle="#000"; ctx.fillText(lenStr, fx+tw+7, fyPx-10);
   }
 
-  // BUG E FIX: draw landing flash
+  // Landing flash
   if(p.landingFlash){
     if(!p.dead) p.landingFlash.timer--;
     if(p.landingFlash.timer <= 0){
@@ -2070,13 +2045,13 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     } else {
       const lf = p.landingFlash;
       const fx = px + pCols[lf.col % pCols.length];
-      const fy = pTop + lf.y;
+      const fyPx = pTop + lf.yRatio * PLAY_H;
       const alpha = lf.timer / 8;
       ctx.globalAlpha = alpha * 0.7;
       ctx.font = `11px ${PX}`;
       const tw = ctx.measureText(lf.text).width;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(fx - 5, fy - 18, tw + 10, 22);
+      ctx.fillRect(fx - 5, fyPx - 18, tw + 10, 22);
       ctx.globalAlpha = 1;
     }
   }
@@ -2153,7 +2128,7 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
     pxDraw(`SCORE ${p.score}`,px+pw/2-sw/2,py+ph/2+14,C.amber,8,false);
   }
 
-  // BUG F FIX: "Last standing" banner — purely visual, no game-end timer
+  // Last standing banner
   if(lastStanding && lastStanding === p && !p.dead){
     const alpha = Math.min(1, (180 - lastStandingTimer) / 30);
     ctx.globalAlpha = alpha * (0.7 + 0.3 * Math.sin(Date.now() * 0.006));
@@ -2235,7 +2210,6 @@ function game4P(){
   const miniRowH = 22;
 
   const focus = activeTypingPlayer;
-  // BUG D FIX: opponents list mirrors the click handler's miniPlayers exactly
   const opponents = [0,1,2,3].filter(i => i !== focus);
 
   ctx.fillStyle = "#0a0a22";
@@ -2305,12 +2279,10 @@ function drawMultiForfeitOverlay(){
   }
 }
 
-// BUG F FIX: checkMultiGameOver rewritten — timer is display-only, survivor plays until their stack fills
 function checkMultiGameOver(){
   if(state !== "game") return;
   const alive = players.filter(p=>!p.dead);
 
-  // All dead — instant game over, no winner
   if(alive.length === 0){
     lastStanding = null;
     state = "gameover_multi";
@@ -2319,18 +2291,15 @@ function checkMultiGameOver(){
     return;
   }
 
-  // Exactly one survivor — announce them but let them keep playing
   if(alive.length === 1 && players.length > 1){
     if(!lastStanding || lastStanding !== alive[0]){
       lastStanding = alive[0];
-      lastStandingTimer = 180; // purely for the visual banner fade-in
-      sfxFanfare();            // BUG F FIX: audio feedback on becoming last standing
+      lastStandingTimer = 180;
+      sfxFanfare();
     }
 
-    // Tick banner timer down (visual only)
     if(lastStandingTimer > 0) lastStandingTimer--;
 
-    // Game ends only when survivor's own stack fills — drawPane sets dead=true
     if(lastStanding.dead){
       state = "gameover_multi";
       stopBGM();
@@ -2339,7 +2308,6 @@ function checkMultiGameOver(){
     return;
   }
 
-  // More than one alive — clear stale lastStanding
   if(alive.length > 1){
     lastStanding = null;
     lastStandingTimer = 0;
