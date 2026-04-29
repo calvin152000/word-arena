@@ -930,24 +930,13 @@ document.addEventListener("mousedown",(e)=>{
     if(mx < paneW) activeTypingPlayer = 0;
     else activeTypingPlayer = 1;
   } else if(state==="game" && playerCount === 4){
-    const OPP_W   = 64;
-    const OPP_GAP = 2;
-    const OPP_N   = 3;
-    const DIV_W   = 2;
-    const OPP_TOTAL = OPP_N * OPP_W + (OPP_N - 1) * OPP_GAP;
-    const DIVX    = W - OPP_TOTAL - DIV_W;
-    const focus   = activeTypingPlayer;
-
-    if(mx >= DIVX + DIV_W){
-      // Clicking the right side — detect which opponent strip was clicked by X
-      const miniPlayers = [0,1,2,3].filter(i => i !== focus);
-      const relX = mx - (DIVX + DIV_W);
-      const slot = Math.min(miniPlayers.length - 1, Math.floor(relX / (OPP_W + OPP_GAP)));
-      const target = miniPlayers[Math.max(0, slot)];
-      if(target !== activeTypingPlayer){
-        activeTypingPlayer = target;
-        sfxClick();
-      }
+    // 4 equal panels side-by-side — click determines which panel you're in
+    const GAP2 = 3;
+    const PW2  = Math.floor((W - GAP2 * 3) / 4);
+    const slot = Math.min(3, Math.floor(mx / (PW2 + GAP2)));
+    if(slot !== activeTypingPlayer && !players[slot].dead){
+      activeTypingPlayer = slot;
+      sfxClick();
     }
   }
 });
@@ -2240,113 +2229,308 @@ function game4P(){
   autoSwitchFromDead();
   tickMultiSpawnCoordinator();
 
-  // ── LAYOUT ───────────────────────────────────────────────────────────────
-  // Left:  big main panel (focused player) — full height
-  // Right: 3 opponent strips side-by-side — each full height, narrow
-  const OPP_W     = 64;
-  const OPP_GAP   = 2;
-  const OPP_N     = 3;
-  const DIV_W     = 3;
-  const OPP_TOTAL = OPP_N * OPP_W + (OPP_N - 1) * OPP_GAP;
-  const DIVX      = W - OPP_TOTAL - DIV_W;
-  const mpw       = DIVX;
+  // ─────────────────────────────────────────────────────────────────────────
+  // LAYOUT: 4 equal panels side-by-side — matches the Tetris reference image
+  // Each panel is full-height, equal width, with the board centered inside.
+  // The active player's panel is highlighted; TAB switches which you type in.
+  // ─────────────────────────────────────────────────────────────────────────
+  const GAP     = 3;                              // gap between panels
+  const PW      = Math.floor((W - GAP * 3) / 4); // each panel width
+  const PH      = H;                              // full height
+  const BOARD_PAD_X = 8;                          // horizontal padding inside panel
+  const BOARD_W = PW - BOARD_PAD_X * 2;          // board inner width
+  const BOARD_PAD_TOP = 52;                       // space for score header
+  const BOARD_PAD_BOT = 32;                       // space for name footer
+  const BOARD_H = PH - BOARD_PAD_TOP - BOARD_PAD_BOT;
 
-  // Same logical grid for every pane — ensures word positions are in sync
-  const SHARED_COLS  = [4, 20, 36, 52];
-  const SHARED_ROW_H = 32;
+  // Columns scaled to fit inside BOARD_W
+  const nCols = 4;
+  const colStep = Math.floor(BOARD_W / nCols);
+  const SHARED_COLS = Array.from({length: nCols}, (_, i) => BOARD_PAD_X + i * colStep + 2);
+  const SHARED_ROW_H = 28;
 
-  const focus     = activeTypingPlayer;
-  const opponents = [0,1,2,3].filter(i => i !== focus);
-  const focusP    = players[focus];
+  const focus = activeTypingPlayer;
 
-  // ── 1. DRAW FULL-CANVAS BACKGROUND ZONES (per-player colour atmosphere) ─
-  // Each player's colour bleeds out behind their region like the reference image.
-
-  // Main player zone — radial glow from centre-left
-  {
-    const cx = mpw * 0.5, cy = H * 0.5;
-    const r  = Math.max(mpw, H) * 0.85;
+  // ── STEP 1: Draw per-player background atmosphere across full canvas ──────
+  // Each player owns 1/4 of the canvas width; their colour radiates outward
+  players.forEach((p, i) => {
+    const panelX = i * (PW + GAP);
+    const cx = panelX + PW / 2;
+    const cy = H * 0.55;
+    const r  = PW * 2.2;
     const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    grd.addColorStop(0,   `rgba(${hexRgb(focusP.color)},0.22)`);
-    grd.addColorStop(0.5, `rgba(${hexRgb(focusP.color)},0.08)`);
+    grd.addColorStop(0,   `rgba(${hexRgb(p.color)},0.30)`);
+    grd.addColorStop(0.45,`rgba(${hexRgb(p.color)},0.12)`);
     grd.addColorStop(1,   `rgba(0,0,0,0)`);
     ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, mpw, H);
-  }
-
-  // Each opponent strip — radial glow centred on their strip
-  opponents.forEach((oppIdx, slot) => {
-    const sx  = DIVX + DIV_W + slot * (OPP_W + OPP_GAP);
-    const opp = players[oppIdx];
-    const cx  = sx + OPP_W * 0.5;
-    const cy  = H * 0.5;
-    const r   = OPP_W * 3.5; // spills well outside the strip
-    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    grd.addColorStop(0,   `rgba(${hexRgb(opp.color)},0.38)`);
-    grd.addColorStop(0.4, `rgba(${hexRgb(opp.color)},0.18)`);
-    grd.addColorStop(1,   `rgba(0,0,0,0)`);
-    ctx.fillStyle = grd;
-    ctx.fillRect(sx - OPP_W, 0, OPP_W * 3, H); // wider rect so glow can spread
+    // draw wider than the panel so colours blend at edges (like the reference)
+    ctx.fillRect(panelX - PW * 0.5, 0, PW * 2, H);
   });
 
-  // ── 2. DRAW PANES ON TOP OF BACKGROUNDS ──────────────────────────────────
-  drawPane(focusP, 0, 0, mpw, H, SHARED_COLS, SHARED_ROW_H, true, false);
+  // ── STEP 2: Draw each panel ───────────────────────────────────────────────
+  players.forEach((p, i) => {
+    const panelX = i * (PW + GAP);
+    const isActive = (i === focus);
 
-  // Animated main divider — glows in active player colour
-  const t = Date.now() * 0.003;
-  const divAlpha = 0.55 + 0.3 * Math.sin(t);
-  ctx.fillStyle = "#04040e";
-  ctx.fillRect(DIVX, 0, DIV_W, H);
-  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},${divAlpha.toFixed(2)})`;
-  ctx.fillRect(DIVX, 0, DIV_W, H);
-  // Soft bloom on divider
-  const divGrd = ctx.createLinearGradient(DIVX - 12, 0, DIVX + DIV_W + 12, 0);
-  divGrd.addColorStop(0,   `rgba(${hexRgb(focusP.color)},0)`);
-  divGrd.addColorStop(0.4, `rgba(${hexRgb(focusP.color)},0.12)`);
-  divGrd.addColorStop(0.6, `rgba(${hexRgb(focusP.color)},0.12)`);
-  divGrd.addColorStop(1,   `rgba(${hexRgb(focusP.color)},0)`);
-  ctx.fillStyle = divGrd;
-  ctx.fillRect(DIVX - 12, 0, DIV_W + 24, H);
+    // --- Panel dark background (lets atmosphere glow show through) ---
+    const bgAlpha = 0.65;
+    ctx.fillStyle = `rgba(3,3,12,${bgAlpha})`;
+    ctx.fillRect(panelX, 0, PW, PH);
 
-  opponents.forEach((oppIdx, slot) => {
-    const sx  = DIVX + DIV_W + slot * (OPP_W + OPP_GAP);
-    const opp = players[oppIdx];
+    // --- Board inner area (blacker) ---
+    const boardX = panelX + BOARD_PAD_X;
+    const boardY = BOARD_PAD_TOP;
+    ctx.fillStyle = "rgba(0,0,0,0.78)";
+    ctx.fillRect(boardX, boardY, BOARD_W, BOARD_H);
 
-    // Thin separator between strips
-    if(slot > 0){
-      ctx.fillStyle = "#030310";
-      ctx.fillRect(sx - OPP_GAP, 0, OPP_GAP, H);
-      // colour tinted separator line
-      const sepClr = `rgba(${hexRgb(opp.color)},0.3)`;
-      ctx.fillStyle = sepClr;
-      ctx.fillRect(sx - 1, 0, 1, H);
+    // --- Board border — player colour, glows when active ---
+    const borderAlpha = isActive ? 0.95 : 0.55;
+    ctx.strokeStyle = `rgba(${hexRgb(p.color)},${borderAlpha})`;
+    ctx.lineWidth = isActive ? 2 : 1.5;
+    if(isActive){ ctx.shadowColor = p.color; ctx.shadowBlur = 14; }
+    ctx.strokeRect(boardX, boardY, BOARD_W, BOARD_H);
+    ctx.shadowBlur = 0;
+
+    // Pulsing active selection outline (outermost)
+    if(isActive){
+      const t = Date.now() * 0.005;
+      const pa = 0.3 + 0.25 * Math.sin(t);
+      ctx.strokeStyle = `rgba(${hexRgb(p.color)},${pa.toFixed(2)})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(panelX + 1, 1, PW - 2, PH - 2);
     }
 
-    drawPane(opp, sx, 0, OPP_W, H, SHARED_COLS, SHARED_ROW_H, false, false);
+    // --- Separator line between panels (not before first) ---
+    if(i > 0){
+      ctx.fillStyle = "rgba(8,8,20,0.9)";
+      ctx.fillRect(panelX - GAP, 0, GAP, H);
+      ctx.fillStyle = `rgba(${hexRgb(p.color)},0.15)`;
+      ctx.fillRect(panelX - 1, 0, 1, H);
+    }
 
-    // Player name label BELOW each strip (outside drawPane, in the margin)
-    ctx.save();
-    ctx.beginPath(); ctx.rect(sx, H - 18, OPP_W, 18); ctx.clip();
+    // --- Score & combo header (top of panel) ---
+    ctx.fillStyle = "rgba(2,2,10,0.85)";
+    ctx.fillRect(panelX, 0, PW, BOARD_PAD_TOP - 2);
+    ctx.fillStyle = `rgba(${hexRgb(p.color)},0.15)`;
+    ctx.fillRect(panelX, BOARD_PAD_TOP - 2, PW, 2);
+
+    // "SCORE" label
     ctx.font = `5px ${PX}`;
-    const nm = opp.name.length > 7 ? opp.name.slice(0,7) : opp.name;
-    const nw = ctx.measureText(nm).width;
-    ctx.fillStyle = opp.dead ? `rgba(${hexRgb(opp.color)},0.3)` : opp.color;
-    ctx.shadowColor = opp.color; ctx.shadowBlur = opp.dead ? 0 : 4;
-    ctx.fillText(nm, sx + OPP_W/2 - nw/2, H - 5);
+    ctx.fillStyle = "#445566";
+    ctx.fillText("SCORE", panelX + 6, 14);
+
+    // Score value
+    const scoreTxt = `${p.score}`;
+    ctx.font = `10px ${PX}`;
+    ctx.fillStyle = C.amber;
+    ctx.shadowColor = C.amber; ctx.shadowBlur = p.score > 0 ? 6 : 0;
+    ctx.fillText(scoreTxt, panelX + 6, 30);
     ctx.shadowBlur = 0;
+
+    // Combo badge (top right)
+    if(p.combo > 1){
+      const cTxt = `x${p.combo}`;
+      ctx.font = `7px ${PX}`;
+      const cw = ctx.measureText(cTxt).width;
+      const comboClr = p.combo >= 5 ? C.amber : C.green;
+      ctx.fillStyle = `rgba(${hexRgb(comboClr)},0.15)`;
+      ctx.fillRect(panelX + PW - cw - 10, 18, cw + 8, 14);
+      ctx.strokeStyle = comboClr; ctx.lineWidth = 1;
+      ctx.strokeRect(panelX + PW - cw - 10, 18, cw + 8, 14);
+      ctx.fillStyle = comboClr; ctx.shadowColor = comboClr; ctx.shadowBlur = 5;
+      ctx.fillText(cTxt, panelX + PW - cw - 6, 29);
+      ctx.shadowBlur = 0;
+    }
+
+    // Escalation level indicator
+    const esc = getEscalation(p.score);
+    if(esc.danger > 0){
+      const lvlColors = [C.teal, C.amber, C.red, "#ff44ff"];
+      const lvlClr = lvlColors[Math.min(esc.danger - 1, 3)];
+      ctx.font = `5px ${PX}`;
+      const lvlTxt = ["LV2","LV3","LV4","MAX"][Math.min(esc.danger - 1, 3)];
+      ctx.fillStyle = lvlClr; ctx.shadowColor = lvlClr; ctx.shadowBlur = 4;
+      ctx.fillText(lvlTxt, panelX + PW/2 - ctx.measureText(lvlTxt).width/2, 14);
+      ctx.shadowBlur = 0;
+    }
+
+    // --- Name footer ---
+    ctx.fillStyle = "rgba(2,2,10,0.85)";
+    ctx.fillRect(panelX, PH - BOARD_PAD_BOT + 2, PW, BOARD_PAD_BOT);
+    ctx.fillStyle = `rgba(${hexRgb(p.color)},0.15)`;
+    ctx.fillRect(panelX, PH - BOARD_PAD_BOT + 2, PW, 1);
+
+    const nameTxt = p.name.length > 8 ? p.name.slice(0, 8) : p.name;
+    ctx.font = `7px ${PX}`;
+    const namew = ctx.measureText(nameTxt).width;
+    ctx.fillStyle = p.dead ? `rgba(${hexRgb(p.color)},0.3)` : p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = p.dead ? 0 : 6;
+    ctx.fillText(nameTxt, panelX + PW/2 - namew/2, PH - BOARD_PAD_BOT + 18);
+    ctx.shadowBlur = 0;
+
+    // "YOU" badge on active player
+    if(isActive){
+      ctx.font = `5px ${PX}`;
+      const youW = ctx.measureText("YOU").width;
+      ctx.fillStyle = `rgba(${hexRgb(p.color)},0.20)`;
+      ctx.fillRect(panelX + PW/2 - youW/2 - 4, PH - BOARD_PAD_BOT + 22, youW + 8, 10);
+      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 4;
+      ctx.fillText("YOU", panelX + PW/2 - youW/2, PH - BOARD_PAD_BOT + 30);
+      ctx.shadowBlur = 0;
+    }
+
+    // Input indicator at bottom
+    if(isActive && !p.dead){
+      const cursor = Math.floor(Date.now()/400)%2===0 ? "_" : " ";
+      const inputTxt = (p.typed || "") + cursor;
+      ctx.font = `7px ${PX}`;
+      const itw = ctx.measureText(inputTxt).width;
+      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 5;
+      ctx.fillText(inputTxt, panelX + PW/2 - itw/2, PH - 6);
+      ctx.shadowBlur = 0;
+    }
+
+    // --- Now draw falling words and stacked rows inside the board area ---
+    ctx.save();
+    ctx.beginPath(); ctx.rect(boardX, boardY, BOARD_W, BOARD_H); ctx.clip();
+
+    // Danger flash overlay
+    if(esc.danger >= 3){ const pulse = 0.04 + 0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(boardX,boardY,BOARD_W,BOARD_H); }
+    else if(esc.danger >= 2){ const pulse = 0.02 + 0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(boardX,boardY,BOARD_W,BOARD_H); }
+
+    const PLAY_H2 = BOARD_H;
+
+    // Physics update (local players only)
+    if(!p._isRemote){
+      if(p.falling){
+        p.falling.yRatio = (p.falling.yRatio || 0) + p.falling.speed / FULL_LANE_H;
+        const limitRatio = Math.max(0, (PLAY_H2 - p.rows.length * SHARED_ROW_H) / PLAY_H2);
+        if(p.falling.yRatio >= limitRatio){
+          p.rows.push({text:p.falling.text, col:p.falling.col});
+          sfxLand();
+          spawnParticles(p.particles,
+            boardX + SHARED_COLS[p.falling.col % SHARED_COLS.length] + 10,
+            boardY + limitRatio * PLAY_H2, C.amber, 5);
+          p.landingFlash = { text:p.falling.text, col:p.falling.col, yRatio:limitRatio, timer:8 };
+          p.falling = p.pendingSpawn || null;
+          p.pendingSpawn = null; p.spawnTimer = 0;
+          const maxRows = Math.max(3, Math.floor((PLAY_H2 - 10) / SHARED_ROW_H));
+          if(p.rows.length > maxRows) p.dead = true;
+        }
+      }
+    } else {
+      if(p.falling){
+        const limitRatio = Math.max(0, (PLAY_H2 - p.rows.length * SHARED_ROW_H) / PLAY_H2);
+        p.falling.yRatio = Math.min(
+          (p.falling.yRatio || 0) + p.falling.speed / FULL_LANE_H,
+          Math.max(limitRatio - 0.001, p.falling.yRatio || 0)
+        );
+        if(p.falling.yRatio >= limitRatio) p.falling = null;
+      }
+    }
+
+    // Draw stacked rows (from bottom up)
+    for(let ri = 0; ri < p.rows.length; ri++){
+      const r = p.rows[ri];
+      const wx = boardX + SHARED_COLS[r.col % SHARED_COLS.length];
+      const wy = boardY + BOARD_H - (ri + 1) * SHARED_ROW_H + SHARED_ROW_H - 4;
+      ctx.font = `8px ${PX}`;
+      const tw = ctx.measureText(r.text).width;
+      const dangerRatio = p.rows.length / 12;
+      const rowClr = dangerRatio > 0.7 ? C.red : dangerRatio > 0.4 ? C.amber : C.green;
+      ctx.fillStyle = `rgba(0,180,120,${0.06 + dangerRatio*0.1})`;
+      ctx.fillRect(wx - 3, wy - 12, tw + 6, 15);
+      ctx.strokeStyle = `rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
+      ctx.lineWidth = 1; ctx.strokeRect(wx - 3, wy - 12, tw + 6, 15);
+      pxDraw(r.text, wx, wy, rowClr, 8, true);
+    }
+
+    // Draw falling word
+    if(p.falling){
+      const fx = boardX + SHARED_COLS[p.falling.col % SHARED_COLS.length];
+      const fyPx = boardY + (p.falling.yRatio || 0) * PLAY_H2;
+      // Store screen coords for particle/submit use
+      p.falling.x = fx;
+      p.falling.y = fyPx;
+      ctx.font = `9px ${PX}`;
+      const tw = ctx.measureText(p.falling.text).width;
+      const len = p.falling.text.length;
+      const wordClr = len <= 3 ? C.green : len <= 5 ? C.teal : len <= 8 ? C.amber : C.red;
+      ctx.fillStyle = `rgba(0,180,255,0.12)`;
+      ctx.fillRect(fx - 3, fyPx - 14, tw + 6, 17);
+      ctx.strokeStyle = `rgba(0,200,255,0.5)`; ctx.lineWidth = 1;
+      ctx.strokeRect(fx - 3, fyPx - 14, tw + 6, 17);
+      pxDraw(p.falling.text, fx, fyPx, wordClr, 9, true);
+    }
+
+    // Landing flash
+    if(p.landingFlash){
+      if(!p.dead) p.landingFlash.timer--;
+      if(p.landingFlash.timer <= 0){ p.landingFlash = null; }
+      else {
+        const lf = p.landingFlash;
+        const fx = boardX + SHARED_COLS[lf.col % SHARED_COLS.length];
+        const fyPx = boardY + lf.yRatio * PLAY_H2;
+        ctx.globalAlpha = (lf.timer / 8) * 0.7;
+        ctx.font = `9px ${PX}`;
+        const tw = ctx.measureText(lf.text).width;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(fx - 3, fyPx - 14, tw + 6, 17);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Particles
+    for(let pi = p.particles.length - 1; pi >= 0; pi--){
+      const pt = p.particles[pi];
+      pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.12; pt.life -= 0.04;
+      if(pt.life <= 0){ p.particles.splice(pi, 1); continue; }
+      ctx.globalAlpha = pt.life;
+      ctx.fillStyle = pt.color;
+      ctx.fillRect(pt.x, pt.y, pt.size, pt.size);
+    }
+    ctx.globalAlpha = 1;
+
+    // Escalation flash text
+    if(p.escFlashTimer > 0){
+      p.escFlashTimer--;
+      const alpha = Math.min(1, p.escFlashTimer / 20);
+      const flashClr = esc.danger>=3?"#ff2244":esc.danger>=2?"#ffaa00":p.color;
+      ctx.globalAlpha = alpha;
+      ctx.font = `8px ${PX}`;
+      const fw = ctx.measureText(p.escFlashLabel).width;
+      pxDraw(p.escFlashLabel, boardX + BOARD_W/2 - fw/2, boardY + BOARD_H/2, flashClr, 8, true);
+      ctx.globalAlpha = 1;
+    }
+
+    // Dead overlay
+    if(p.dead){
+      ctx.fillStyle = "rgba(0,0,0,0.75)";
+      ctx.fillRect(boardX, boardY, BOARD_W, BOARD_H);
+      ctx.font = `8px ${PX}`;
+      const dtxt = "OUT";
+      const dw = ctx.measureText(dtxt).width;
+      pxDraw(dtxt, boardX + BOARD_W/2 - dw/2, boardY + BOARD_H/2 - 8, C.red, 8, true);
+      ctx.font = `6px ${PX}`;
+      const stxt = `${p.score}`;
+      const sw = ctx.measureText(stxt).width;
+      pxDraw(stxt, boardX + BOARD_W/2 - sw/2, boardY + BOARD_H/2 + 10, C.amber, 6, false);
+    }
+
     ctx.restore();
   });
 
-  // ── 3. SUBTLE FOOTER LABELS ───────────────────────────────────────────────
-  ctx.font = `6px ${PX}`;
-  const youTxt = "YOUR LANE";
-  const yw = ctx.measureText(youTxt).width;
-  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},0.35)`;
-  ctx.fillText(youTxt, mpw/2 - yw/2, H - 5);
+  // ── STEP 3: TAB hint ─────────────────────────────────────────────────────
+  ctx.font = `5px ${PX}`;
+  ctx.fillStyle = "rgba(40,50,80,0.6)";
+  const tabHint = "TAB = switch";
+  ctx.fillText(tabHint, W/2 - ctx.measureText(tabHint).width/2, H - 2);
 
   checkMultiGameOver();
   drawMultiForfeitOverlay();
 }
+
 
 function drawMultiForfeitOverlay(){
   if(!multiForfeitConfirm) return;
