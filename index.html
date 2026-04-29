@@ -546,7 +546,7 @@ function tickMultiSpawnCoordinator(){
   const sharedSpeed = (MULTI_CFG.baseSpeed + seededRand(speedSeed) * MULTI_CFG.rand) * esc.mult;
 
   const colSeed = getSpawnSeedForTick(currentTick + 55555);
-  const sharedCol = Math.floor(seededRand(colSeed) * 3);
+  const sharedCol = Math.floor(seededRand(colSeed) * 4); // 4 cols to match SHARED_COLS
 
   alive.forEach(p => {
     const activeSet = new Set(p.rows.map(r=>r.text));
@@ -2175,7 +2175,7 @@ function game2P(){
   autoSwitchFromDead();
   tickMultiSpawnCoordinator();
   const pw=W/2-1, ph=H;
-  const pCols2=[14,70,126];
+  const pCols2=[8, 62, 116, 170];
   const pRowH2=32;
   ctx.fillStyle="#0a0a22"; ctx.fillRect(W/2-1,0,2,H);
   ctx.fillStyle=C.dim; ctx.fillRect(W/2-1,0,2,H);
@@ -2204,10 +2204,11 @@ function game4P(){
   const spw   = W - DIVX - DIV_W;
   const sph   = Math.floor(H / 3);
 
-  const mainCols = [18, 90, 162, 234];
-  const mainRowH = 40;
-  const miniCols = [8, 44, 80];
-  const miniRowH = 22;
+  // All panes share the same logical column offsets and row height so that
+  // words always land at the same grid position regardless of pane size.
+  // drawPane clips to its rect, so columns just need to fit in the narrowest pane (spw ≈ 228px).
+  const SHARED_COLS  = [8, 62, 116, 170];  // 4 cols, max offset ~170 — fits both mpw and spw
+  const SHARED_ROW_H = 32;                  // single row height for all panes
 
   const focus = activeTypingPlayer;
   const opponents = [0,1,2,3].filter(i => i !== focus);
@@ -2226,11 +2227,11 @@ function game4P(){
     ctx.fillStyle = `rgba(80,80,180,0.35)`; ctx.fillRect(DIVX + DIV_W, dy - 1, spw, 2);
   }
 
-  drawPane(players[focus], 0, 0, mpw, mph, mainCols, mainRowH, true, false);
+  drawPane(players[focus], 0, 0, mpw, mph, SHARED_COLS, SHARED_ROW_H, true, false);
 
   opponents.forEach((oppIdx, slot) => {
     const sy = slot * sph;
-    drawPane(players[oppIdx], DIVX + DIV_W, sy, spw, sph, miniCols, miniRowH, false, false);
+    drawPane(players[oppIdx], DIVX + DIV_W, sy, spw, sph, SHARED_COLS, SHARED_ROW_H, false, false);
   });
 
   const focusP = players[focus];
