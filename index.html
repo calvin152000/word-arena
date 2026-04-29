@@ -1946,23 +1946,33 @@ function drawPane(p, px, py, pw, ph, pCols, pRowH, isActive, isRemote=false) {
   ctx.save();
   ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
 
+  // Narrow-pane detection — must come first, used throughout
+  const _isNarrowEarly = pw < 100;
+  const _headerH = _isNarrowEarly ? 28 : 36;
+  const _inputH  = _isNarrowEarly ? 32 : 44;
+  const PLAY_H   = ph - _headerH - _inputH;
+  const pTop     = py + _headerH;
+  const pBottom  = py + ph - _inputH;
+
   const esc = getEscalation(p.score);
 
   if(esc.danger > p.lastEscDanger){
     p.lastEscDanger = esc.danger; p.escFlashTimer = 90; p.escFlashLabel = esc.label; sfxCombo();
   }
+
+  // Semi-transparent play area overlay — dark enough to read text, but lets
+  // the per-player atmosphere colour bleed through behind the pane.
+  const _bgAlpha = _isNarrowEarly ? 0.52 : 0.72;
+  ctx.fillStyle = `rgba(3,3,14,${_bgAlpha})`;
+  ctx.fillRect(px, py, pw, ph);
+
+  // Player colour inner border glow
+  ctx.strokeStyle = `rgba(${hexRgb(p.color)},${_isNarrowEarly ? 0.50 : 0.28})`;
+  ctx.lineWidth = _isNarrowEarly ? 1.5 : 1;
+  ctx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
+
   if(esc.danger>=3){ const pulse=0.04+0.04*Math.sin(Date.now()*0.008); ctx.fillStyle=`rgba(255,20,50,${pulse})`; ctx.fillRect(px,py,pw,ph); }
   else if(esc.danger===2){ const pulse=0.02+0.02*Math.sin(Date.now()*0.005); ctx.fillStyle=`rgba(255,120,0,${pulse})`; ctx.fillRect(px,py,pw,ph); }
-
-  // PLAY_H: usable vertical space between header and input bar
-  // Narrow strips (opponent panels) use smaller header/input to give more play space
-  const _isNarrowEarly = pw < 100;
-  const _headerH = _isNarrowEarly ? 28 : 36;
-  const _inputH  = _isNarrowEarly ? 32 : 44;
-  const PLAY_H = ph - _headerH - _inputH;
-  // pTop/pBottom override for narrow panes (shadows the outer let declarations)
-  const pTop    = py + _headerH;
-  const pBottom = py + ph - _inputH;
 
   const dynInterval = Math.max(30, MULTI_CFG.spawnBase - p.score * 0.3);
 
@@ -2230,63 +2240,109 @@ function game4P(){
   autoSwitchFromDead();
   tickMultiSpawnCoordinator();
 
-  // ── LAYOUT: mirrors the reference image ──────────────────────────────────
-  // Left:  big main panel for focused player (full height)
-  // Right: 3 opponent strips arranged SIDE-BY-SIDE, each full H, narrow
-  const OPP_W   = 64;                        // each opponent strip width
-  const OPP_GAP = 2;                          // gap between strips
-  const OPP_N   = 3;                          // number of opponent strips
-  const DIV_W   = 2;                          // main divider
+  // ── LAYOUT ───────────────────────────────────────────────────────────────
+  // Left:  big main panel (focused player) — full height
+  // Right: 3 opponent strips side-by-side — each full height, narrow
+  const OPP_W     = 64;
+  const OPP_GAP   = 2;
+  const OPP_N     = 3;
+  const DIV_W     = 3;
   const OPP_TOTAL = OPP_N * OPP_W + (OPP_N - 1) * OPP_GAP;
-  const DIVX    = W - OPP_TOTAL - DIV_W;     // where main pane ends
-  const mpw     = DIVX;
+  const DIVX      = W - OPP_TOTAL - DIV_W;
+  const mpw       = DIVX;
 
-  // Shared col/row config — same logical grid for ALL panes.
-  // Cols are offsets from pane left; max 58px fits inside OPP_W=64px.
+  // Same logical grid for every pane — ensures word positions are in sync
   const SHARED_COLS  = [4, 20, 36, 52];
   const SHARED_ROW_H = 32;
 
   const focus     = activeTypingPlayer;
   const opponents = [0,1,2,3].filter(i => i !== focus);
+  const focusP    = players[focus];
 
-  // ── Main pane ────────────────────────────────────────────────────────────
-  drawPane(players[focus], 0, 0, mpw, H, SHARED_COLS, SHARED_ROW_H, true, false);
+  // ── 1. DRAW FULL-CANVAS BACKGROUND ZONES (per-player colour atmosphere) ─
+  // Each player's colour bleeds out behind their region like the reference image.
 
-  // ── Animated main divider ────────────────────────────────────────────────
-  const t = Date.now() * 0.003;
-  const divAlpha = 0.45 + 0.25 * Math.sin(t);
-  ctx.fillStyle = "#060618";
-  ctx.fillRect(DIVX, 0, DIV_W, H);
-  ctx.fillStyle = `rgba(${hexRgb(players[focus].color)},${divAlpha.toFixed(2)})`;
-  ctx.fillRect(DIVX, 0, DIV_W, H);
+  // Main player zone — radial glow from centre-left
+  {
+    const cx = mpw * 0.5, cy = H * 0.5;
+    const r  = Math.max(mpw, H) * 0.85;
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grd.addColorStop(0,   `rgba(${hexRgb(focusP.color)},0.22)`);
+    grd.addColorStop(0.5, `rgba(${hexRgb(focusP.color)},0.08)`);
+    grd.addColorStop(1,   `rgba(0,0,0,0)`);
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, mpw, H);
+  }
 
-  // ── 3 opponent strips side-by-side on the right ─────────────────────────
+  // Each opponent strip — radial glow centred on their strip
   opponents.forEach((oppIdx, slot) => {
-    const sx = DIVX + DIV_W + slot * (OPP_W + OPP_GAP);
-
-    // Draw strip separator
-    if(slot > 0){
-      ctx.fillStyle = "#040410";
-      ctx.fillRect(sx - OPP_GAP, 0, OPP_GAP, H);
-      ctx.fillStyle = "rgba(60,60,140,0.4)";
-      ctx.fillRect(sx - OPP_GAP, 0, 1, H);
-    }
-
-    drawPane(players[oppIdx], sx, 0, OPP_W, H, SHARED_COLS, SHARED_ROW_H, false, false);
+    const sx  = DIVX + DIV_W + slot * (OPP_W + OPP_GAP);
+    const opp = players[oppIdx];
+    const cx  = sx + OPP_W * 0.5;
+    const cy  = H * 0.5;
+    const r   = OPP_W * 3.5; // spills well outside the strip
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grd.addColorStop(0,   `rgba(${hexRgb(opp.color)},0.38)`);
+    grd.addColorStop(0.4, `rgba(${hexRgb(opp.color)},0.18)`);
+    grd.addColorStop(1,   `rgba(0,0,0,0)`);
+    ctx.fillStyle = grd;
+    ctx.fillRect(sx - OPP_W, 0, OPP_W * 3, H); // wider rect so glow can spread
   });
 
-  // ── Subtle labels ────────────────────────────────────────────────────────
-  const focusP = players[focus];
+  // ── 2. DRAW PANES ON TOP OF BACKGROUNDS ──────────────────────────────────
+  drawPane(focusP, 0, 0, mpw, H, SHARED_COLS, SHARED_ROW_H, true, false);
+
+  // Animated main divider — glows in active player colour
+  const t = Date.now() * 0.003;
+  const divAlpha = 0.55 + 0.3 * Math.sin(t);
+  ctx.fillStyle = "#04040e";
+  ctx.fillRect(DIVX, 0, DIV_W, H);
+  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},${divAlpha.toFixed(2)})`;
+  ctx.fillRect(DIVX, 0, DIV_W, H);
+  // Soft bloom on divider
+  const divGrd = ctx.createLinearGradient(DIVX - 12, 0, DIVX + DIV_W + 12, 0);
+  divGrd.addColorStop(0,   `rgba(${hexRgb(focusP.color)},0)`);
+  divGrd.addColorStop(0.4, `rgba(${hexRgb(focusP.color)},0.12)`);
+  divGrd.addColorStop(0.6, `rgba(${hexRgb(focusP.color)},0.12)`);
+  divGrd.addColorStop(1,   `rgba(${hexRgb(focusP.color)},0)`);
+  ctx.fillStyle = divGrd;
+  ctx.fillRect(DIVX - 12, 0, DIV_W + 24, H);
+
+  opponents.forEach((oppIdx, slot) => {
+    const sx  = DIVX + DIV_W + slot * (OPP_W + OPP_GAP);
+    const opp = players[oppIdx];
+
+    // Thin separator between strips
+    if(slot > 0){
+      ctx.fillStyle = "#030310";
+      ctx.fillRect(sx - OPP_GAP, 0, OPP_GAP, H);
+      // colour tinted separator line
+      const sepClr = `rgba(${hexRgb(opp.color)},0.3)`;
+      ctx.fillStyle = sepClr;
+      ctx.fillRect(sx - 1, 0, 1, H);
+    }
+
+    drawPane(opp, sx, 0, OPP_W, H, SHARED_COLS, SHARED_ROW_H, false, false);
+
+    // Player name label BELOW each strip (outside drawPane, in the margin)
+    ctx.save();
+    ctx.beginPath(); ctx.rect(sx, H - 18, OPP_W, 18); ctx.clip();
+    ctx.font = `5px ${PX}`;
+    const nm = opp.name.length > 7 ? opp.name.slice(0,7) : opp.name;
+    const nw = ctx.measureText(nm).width;
+    ctx.fillStyle = opp.dead ? `rgba(${hexRgb(opp.color)},0.3)` : opp.color;
+    ctx.shadowColor = opp.color; ctx.shadowBlur = opp.dead ? 0 : 4;
+    ctx.fillText(nm, sx + OPP_W/2 - nw/2, H - 5);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  });
+
+  // ── 3. SUBTLE FOOTER LABELS ───────────────────────────────────────────────
   ctx.font = `6px ${PX}`;
   const youTxt = "YOUR LANE";
   const yw = ctx.measureText(youTxt).width;
-  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},0.40)`;
+  ctx.fillStyle = `rgba(${hexRgb(focusP.color)},0.35)`;
   ctx.fillText(youTxt, mpw/2 - yw/2, H - 5);
-
-  ctx.font = `5px ${PX}`;
-  const tabTxt = "TAB";
-  ctx.fillStyle = "rgba(50,60,100,0.7)";
-  ctx.fillText(tabTxt, DIVX + DIV_W + OPP_TOTAL/2 - ctx.measureText(tabTxt).width/2, H - 5);
 
   checkMultiGameOver();
   drawMultiForfeitOverlay();
