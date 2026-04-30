@@ -1263,37 +1263,26 @@ function sendGameState(){
   const me = players[localPlayerIdx];
   if(!me) return;
 
-  const rowsChanged = me.rows.length !== lastSentRowCount;
-  if(rowsChanged) lastSentRowCount = me.rows.length;
-
-  const currentFallingText = me.falling ? me.falling.text : null;
-  const fallingChanged = currentFallingText !== lastSentFallingText;
-  if(fallingChanged) lastSentFallingText = currentFallingText;
-
   const data = {
     type: "gamestate",
     score: me.score,
     combo: me.combo,
-    dead: me.dead,
+    dead: me.dead,      // always send dead flag so opponent triggers gameover
+    rows: me.rows,
   };
 
-  if(rowsChanged){ data.rows = me.rows; }
-
-  // Always send falling position so opponent pane stays in sync
   if(me.falling){
     data.falling = {
       text: me.falling.text,
       col: me.falling.col,
       speed: me.falling.speed,
-      // ── KEY FIX: transmit as a 0-1 ratio of FULL_LANE_H ──
       yRatio: me.falling.yRatio !== undefined
         ? me.falling.yRatio
-        : me.falling.y / FULL_LANE_H,
+        : (me.falling.y || 0) / FULL_LANE_H,
     };
   } else {
     data.falling = null;
   }
-  data.fallingChanged = fallingChanged;
 
   if(hostConn){ try{ hostConn.send(data); }catch(e){} }
   guestConns.forEach(c=>{ try{ c.send(data); }catch(e){} });
@@ -1311,7 +1300,6 @@ function onGameMsg(data){
 
   if(data.rows !== undefined){ opp.rows = data.rows; }
 
-  // Always update falling from network — yRatio keeps panes in sync
   if(data.falling){
     opp.falling = {
       text: data.falling.text,
@@ -1323,13 +1311,26 @@ function onGameMsg(data){
     opp.falling = null;
   }
 
-  if(opp.dead && !players[localPlayerIdx].dead){
+  // Trigger gameover on THIS client whenever opponent is dead AND we are in game.
+  // Works regardless of who died first — if opponent died, we won; if we also
+  // died, checkMultiGameOver already set state. Either way, flip to gameover_multi.
+  if(opp.dead && (state === "game" || state === "gameover_multi")){
+    const me = players[localPlayerIdx];
     const sessionAtCall = gameSessionId;
     setTimeout(()=>{
-      if(gameSessionId === sessionAtCall && state === "game"){
-        state="gameover_multi";
+      if(gameSessionId !== sessionAtCall) return;
+      if(state === "game"){
+        // Determine winner before flipping state
+        if(!me.dead){
+          lastStanding = me; // local player survived
+        } else {
+          // Both dead — whoever has higher score wins
+          lastStanding = (me.score >= opp.score) ? me : opp;
+        }
+        state = "gameover_multi";
+        stopBGM();
       }
-    }, 1000);
+    }, 800);
   }
 }
 
@@ -2213,7 +2214,6 @@ function game2P(){
   const t=Date.now()*0.003;
   const alpha=0.3+0.2*Math.sin(t);
   ctx.fillStyle=`rgba(0,229,204,${alpha.toFixed(2)})`; ctx.fillRect(W/2-1,0,2,H);
-  if(isOnlineGame) sendGameState();
   checkMultiGameOver();
   drawMultiForfeitOverlay();
 }
@@ -2557,6 +2557,18 @@ function drawMultiForfeitOverlay(){
 function checkMultiGameOver(){
   if(state !== "game") return;
   const alive = players.filter(p=>!p.dead);
+  const me = players[localPlayerIdx];
+
+  // If local player just died, blast the dead state to opponent immediately
+  // (bypass rate limiter so they hear it fast)
+  if(isOnlineGame && me && me.dead && state === "game"){
+    const urgentData = {
+      type:"gamestate", score:me.score, combo:me.combo, dead:true,
+      rows:me.rows, falling:null
+    };
+    if(hostConn){ try{ hostConn.send(urgentData); }catch(e){} }
+    guestConns.forEach(c=>{ try{ c.send(urgentData); }catch(e){} });
+  }
 
   if(alive.length === 0){
     lastStanding = null;
@@ -3091,6 +3103,12 @@ function loop(){
   else if(state==="gameover_multi") gameover_multi();
 
   drawMusicIcon();
+
+  // Keep sending game state for a window after local death so opponent
+  // receives dead=true even if state already flipped to gameover_multi
+  if(isOnlineGame && (state === "game" || state === "gameover_multi")){
+    sendGameState();
+  }
 
   if(state !== lastState && audioReady){
     if(["menu","difficulty","multiplayer","hostjoin","joingame","options","lobby_wait","howtoplay"].includes(state)) startBGM("menu");
