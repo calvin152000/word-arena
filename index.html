@@ -1311,26 +1311,28 @@ function onGameMsg(data){
     opp.falling = null;
   }
 
-  // Trigger gameover on THIS client whenever opponent is dead AND we are in game.
-  // Works regardless of who died first — if opponent died, we won; if we also
-  // died, checkMultiGameOver already set state. Either way, flip to gameover_multi.
-  if(opp.dead && (state === "game" || state === "gameover_multi")){
+  // When opponent is marked dead, trigger gameover on THIS client too.
+  // checkMultiGameOver handles the loser side (me.dead=true).
+  // This handler covers the WINNER side — opponent died, we survived.
+  if(opp.dead && state === "game"){
     const me = players[localPlayerIdx];
+    // Set lastStanding so the result screen knows who won
+    if(!me.dead){
+      lastStanding = me; // I am the winner
+    }
+    // Let checkMultiGameOver handle the actual state flip on next frame
+    // (it will see alive.length===1 and transition after short delay)
+    // But also ensure it fires even if checkMultiGameOver ran this frame already:
     const sessionAtCall = gameSessionId;
     setTimeout(()=>{
       if(gameSessionId !== sessionAtCall) return;
       if(state === "game"){
-        // Determine winner before flipping state
-        if(!me.dead){
-          lastStanding = me; // local player survived
-        } else {
-          // Both dead — whoever has higher score wins
-          lastStanding = (me.score >= opp.score) ? me : opp;
-        }
+        if(!me.dead) lastStanding = me;
+        else lastStanding = (me.score >= opp.score) ? me : opp;
         state = "gameover_multi";
         stopBGM();
       }
-    }, 800);
+    }, 700);
   }
 }
 
@@ -2559,9 +2561,9 @@ function checkMultiGameOver(){
   const alive = players.filter(p=>!p.dead);
   const me = players[localPlayerIdx];
 
-  // If local player just died, blast the dead state to opponent immediately
-  // (bypass rate limiter so they hear it fast)
-  if(isOnlineGame && me && me.dead && state === "game"){
+  // ── Emergency network blast when local player just died ────────────────
+  // Bypass rate limiter — opponent must hear dead=true immediately
+  if(isOnlineGame && me && me.dead){
     const urgentData = {
       type:"gamestate", score:me.score, combo:me.combo, dead:true,
       rows:me.rows, falling:null
@@ -2570,6 +2572,7 @@ function checkMultiGameOver(){
     guestConns.forEach(c=>{ try{ c.send(urgentData); }catch(e){} });
   }
 
+  // ── All dead → no winner ───────────────────────────────────────────────
   if(alive.length === 0){
     lastStanding = null;
     state = "gameover_multi";
@@ -2577,22 +2580,38 @@ function checkMultiGameOver(){
     return;
   }
 
+  // ── Exactly one survivor ───────────────────────────────────────────────
   if(alive.length === 1 && players.length > 1){
-    if(!lastStanding || lastStanding !== alive[0]){
-      lastStanding = alive[0];
-      lastStandingTimer = 180;
+    const survivor = alive[0];
+
+    // Announce last standing (visual + sfx) once
+    if(!lastStanding || lastStanding !== survivor){
+      lastStanding = survivor;
+      lastStandingTimer = 60; // short display before gameover screen
       sfxFanfare();
     }
 
     if(lastStandingTimer > 0) lastStandingTimer--;
 
-    if(lastStanding.dead){
+    // KEY FIX: if LOCAL player is NOT the survivor → they already lost.
+    // Transition to gameover_multi immediately for the loser so they see
+    // the result screen. The survivor also transitions after the brief delay.
+    if(me && me.dead){
+      // Local player is the loser — go to result screen now
+      state = "gameover_multi";
+      stopBGM();
+      return;
+    }
+
+    // Local player is the survivor — wait for the short fanfare then end
+    if(lastStandingTimer <= 0){
       state = "gameover_multi";
       stopBGM();
     }
     return;
   }
 
+  // ── Multiple players still alive ───────────────────────────────────────
   if(alive.length > 1){
     lastStanding = null;
     lastStandingTimer = 0;
