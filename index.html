@@ -514,14 +514,19 @@ function onLobbyMsg(data, fromConn){
     }
   } else if(type==="rematchvote"){
     rematchVotes[from] = data.playAgain;
-    if(lobby.role==="host"){
-      broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain});
-      checkRematchReady();
+    if(lobby.role==="host") broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain, name:data.name});
+    if(!data.playAgain){
+      // This peer is leaving — remove them
+      delete lobbyPeers[from]; delete remoteStates[from];
+      lobby.players = Object.keys(lobbyPeers).length+1;
+    } else {
+      // This peer wants to play again — they'll show up in lobby_wait
+      if(lobbyPeers[from]) lobbyPeers[from].ready = false;
     }
-    if(!data.playAgain && lobbyPeers[from]) delete lobbyPeers[from];
 
   } else if(type==="rematchresult"){
-    if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; });
+    // No longer used but kept for safety
+    if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; delete remoteStates[id]; });
     returnToLobby();
 
   } else if(type==="leave"){
@@ -645,18 +650,30 @@ function startCountdown(){
 }
 
 // ── REMATCH VOTING ────────────────────────────────────────────────────────────
-let myRematchVote  = null;
-let rematchVotes   = {};
+let myRematchVote  = null;   // null=not voted, true=play again, false=menu
+let rematchVotes   = {};     // { peerId: true/false }
 let rematchTimeout = null;
+let rematchTimeLeft = 15;    // seconds remaining shown on screen
+let rematchTickInterval = null;
 const REMATCH_TIMEOUT_MS = 15000;
 
 function initRematch(){
-  myRematchVote = null;
-  rematchVotes  = {};
+  myRematchVote  = null;
+  rematchVotes   = {};
+  rematchTimeLeft = 15;
   if(rematchTimeout) clearTimeout(rematchTimeout);
+  if(rematchTickInterval) clearInterval(rematchTickInterval);
+  // Tick down the countdown display every second
+  rematchTickInterval = setInterval(()=>{
+    rematchTimeLeft = Math.max(0, rematchTimeLeft - 1);
+  }, 1000);
+  // Auto-go-to-menu after 15s
   rematchTimeout = setTimeout(()=>{
+    if(rematchTickInterval){ clearInterval(rematchTickInterval); rematchTickInterval=null; }
     if(state!=="gameover_multi"||myRematchVote!==null) return;
-    castRematchVote(false);
+    // Time's up — go to menu
+    myRematchVote = false;
+    leaveLobbyChannel(); state="menu"; resetAll(); startBGM("menu");
   }, REMATCH_TIMEOUT_MS);
 }
 
@@ -664,36 +681,42 @@ function castRematchVote(playAgain){
   if(myRematchVote!==null) return;
   myRematchVote = playAgain;
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
-  rematchVotes[myPlayerId] = playAgain;
-  const msg = {type:"rematchvote", from:myPlayerId, playAgain};
+  if(rematchTickInterval){ clearInterval(rematchTickInterval); rematchTickInterval=null; }
+
+  // Notify others of our decision
+  const msg = {type:"rematchvote", from:myPlayerId, playAgain, name: username||"P?"};
   if(lobby.role==="host") broadcastLobby(msg);
   else sendToHost(msg);
+
   if(!playAgain){
+    // Going to menu immediately
     leaveLobbyChannel(); state="menu"; resetAll(); startBGM("menu");
     return;
   }
-  if(lobby.role==="host") checkRematchReady();
-}
 
-function checkRematchReady(){
-  if(lobby.role!=="host") return;
-  const connIds = Object.keys(lobbyPeers);
-  if(!connIds.every(id=>rematchVotes[id]!==undefined)) return;
-  const leaving = connIds.filter(id=>rematchVotes[id]===false);
-  leaving.forEach(id=>delete lobbyPeers[id]);
-  broadcastLobby({type:"rematchresult", leaving});
-  returnToLobby();
+  // Play Again — go to lobby immediately, wait for others there
+  if(lobby.role==="host"){
+    // Host resets lobby and waits
+    returnToLobby();
+  } else {
+    // Guest goes to lobby_wait — host is already waiting there (or will rejoin)
+    returnToLobby();
+  }
 }
 
 function returnToLobby(){
   myReady=false; lobbyReadyCount=0;
   countdownActive=false; countdownValue=3;
   if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+  // Reset ready flags but keep connections alive
   Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
   if(lobby.role==="join") lobby.hostReady=false;
   lobby.players = Object.keys(lobbyPeers).length+1;
   state="lobby_wait"; startBGM("menu");
 }
+
+// Not needed anymore but kept for network message handling
+function checkRematchReady(){ /* no-op — individual voting now */ }
 
 // ── PLAYER STATE ──────────────────────────────────────────────────────────────
 function makePlayerState(id,color,name){
