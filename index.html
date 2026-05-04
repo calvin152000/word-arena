@@ -412,7 +412,7 @@ async function hostGame(){
       conn.on("open",()=>{
         guestConns.push(conn);
         conn.on("data",(data)=>{
-          if(data.type==="gamestate") onGameMsg(data, conn);
+          if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
         // Send welcome with current peer list
@@ -449,7 +449,7 @@ async function submitJoinCode(){
       joinConnecting=false; joinErrorMsg=""; state="lobby_wait";
       hostConn.send({type:"join",from:myPlayerId,name:username||"P?"});
       hostConn.on("data",(data)=>{
-        if(data.type==="gamestate") onGameMsg(data, hostConn);
+        if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
         else onLobbyMsg(data, hostConn);
       });
     });
@@ -537,6 +537,25 @@ function onLobbyMsg(data, fromConn){
 // Guest: sends to host, receives relayed states from host
 
 function onGameMsg(data, fromConn){
+  if(data.type==="wordcleared"){
+    // Immediately clear the falling word for that player on this screen
+    const slot = data.slotIdx;
+    if(slot!==undefined && players[slot] && slot!==localPlayerIdx){
+      players[slot].falling = null;
+      players[slot].spawnTimer = 0;
+      // Sync score/combo too
+      if(data.score!==undefined) players[slot].score = data.score;
+      if(data.combo!==undefined) players[slot].combo = data.combo;
+    }
+    // Host relays to other guests
+    if(lobby.role==="host"){
+      guestConns.forEach(conn=>{
+        if(conn!==fromConn){try{conn.send(data);}catch(e){}}
+      });
+    }
+    return;
+  }
+
   if(data.type!=="gamestate") return;
   const senderId=data.from;
   if(!senderId) return;
@@ -829,7 +848,11 @@ function multiSubmit(p){
     const esc=getEscalation(p.score),pts=getMultiPts(val,p.combo,esc.danger);
     p.score+=pts; p.combo++;
     spawnParticles(p.particles,p.falling.x??40,p.falling.y??40,p.color,10);
-    p.combo>2?sfxCombo():sfxDestroy(); p.falling=null; p.spawnTimer=0; p.typed=""; return;
+    p.combo>2?sfxCombo():sfxDestroy();
+    p.falling=null; p.spawnTimer=0; p.typed="";
+    // Instantly notify all peers to clear this word from their screens
+    sendWordCleared(p);
+    return;
   }
   const i=p.rows.findIndex(r=>r.text===val);
   if(i!==-1){
@@ -838,6 +861,19 @@ function multiSubmit(p){
     spawnParticles(p.particles,p.falling?(p.falling.x??40):40,300,p.color,8);
   } else { p.combo=0; sfxMiss(); }
   p.typed="";
+}
+
+function sendWordCleared(p){
+  if(!isOnlineGame) return;
+  const msg={
+    type:"wordcleared",
+    from:myPlayerId,
+    slotIdx:localPlayerIdx,
+    score:p.score,
+    combo:p.combo,
+  };
+  if(lobby.role==="host") guestConns.forEach(c=>{try{c.send(msg);}catch(e){}});
+  else if(hostConn){try{hostConn.send(msg);}catch(e){}}
 }
 
 // ── MOUSE / KEYBOARD ─────────────────────────────────────────────────────────
