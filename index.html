@@ -512,6 +512,18 @@ function onLobbyMsg(data, fromConn){
       const mySlot = data.slotOrder.indexOf(myPlayerId);
       if(mySlot !== -1) localPlayerIdx = mySlot;
     }
+  } else if(type==="rematchvote"){
+    rematchVotes[from] = data.playAgain;
+    if(lobby.role==="host"){
+      broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain});
+      checkRematchReady();
+    }
+    if(!data.playAgain && lobbyPeers[from]) delete lobbyPeers[from];
+
+  } else if(type==="rematchresult"){
+    if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; });
+    returnToLobby();
+
   } else if(type==="leave"){
     delete lobbyPeers[from]; delete remoteStates[from];
     lobby.players=lobby.role==="host"?Object.keys(lobbyPeers).length+1:Object.keys(lobbyPeers).length+2;
@@ -611,6 +623,57 @@ function startCountdown(){
       setTimeout(()=>startGame("multi", lobby.required), 200);
     }
   }, 1000);
+}
+
+// ── REMATCH VOTING ────────────────────────────────────────────────────────────
+let myRematchVote  = null;
+let rematchVotes   = {};
+let rematchTimeout = null;
+const REMATCH_TIMEOUT_MS = 15000;
+
+function initRematch(){
+  myRematchVote = null;
+  rematchVotes  = {};
+  if(rematchTimeout) clearTimeout(rematchTimeout);
+  rematchTimeout = setTimeout(()=>{
+    if(state!=="gameover_multi"||myRematchVote!==null) return;
+    castRematchVote(false);
+  }, REMATCH_TIMEOUT_MS);
+}
+
+function castRematchVote(playAgain){
+  if(myRematchVote!==null) return;
+  myRematchVote = playAgain;
+  if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
+  rematchVotes[myPlayerId] = playAgain;
+  const msg = {type:"rematchvote", from:myPlayerId, playAgain};
+  if(lobby.role==="host") broadcastLobby(msg);
+  else sendToHost(msg);
+  if(!playAgain){
+    leaveLobbyChannel(); state="menu"; resetAll(); startBGM("menu");
+    return;
+  }
+  if(lobby.role==="host") checkRematchReady();
+}
+
+function checkRematchReady(){
+  if(lobby.role!=="host") return;
+  const connIds = Object.keys(lobbyPeers);
+  if(!connIds.every(id=>rematchVotes[id]!==undefined)) return;
+  const leaving = connIds.filter(id=>rematchVotes[id]===false);
+  leaving.forEach(id=>delete lobbyPeers[id]);
+  broadcastLobby({type:"rematchresult", leaving});
+  returnToLobby();
+}
+
+function returnToLobby(){
+  myReady=false; lobbyReadyCount=0;
+  countdownActive=false; countdownValue=3;
+  if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
+  Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
+  if(lobby.role==="join") lobby.hostReady=false;
+  lobby.players = Object.keys(lobbyPeers).length+1;
+  state="lobby_wait"; startBGM("menu");
 }
 
 // ── PLAYER STATE ──────────────────────────────────────────────────────────────
@@ -721,6 +784,8 @@ function resetAll(){
     players.push(makePlayerState(i,PLAYER_COLORS[i],pname));
   }
   lastStanding=null; lastStandingTimer=0; multiForfeitConfirm=false;
+  myRematchVote=null; rematchVotes={};
+  if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
   multiSpawnInterval=130; multiRoundScore=0; multiCurrentLength=3; lastSpawnTick=-1;
   // Bug5: do NOT reset multiGameSeed / multiGameStartMs here —
   // they are set by startCountdown (host) or gameseed msg (guest) BEFORE resetAll
