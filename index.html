@@ -1403,30 +1403,185 @@ function game4P(){
   applyRemoteStates();
   sendGameState();
 
-  // The local player's pane = large left area
-  // The 3 opponents = right column, stacked with gaps
-  const me=players[localPlayerIdx];
-  const opponents=[0,1,2,3].filter(i=>i!==localPlayerIdx);
+  // 4 equal panes side by side — identical look to 2P, no narrow mode
+  const DIVW = 3;
+  const pw = Math.floor((W - DIVW * 3) / 4);
+  const ph = H;
 
-  // Draw vertical divider gap
-  ctx.fillStyle="rgba(0,0,0,0.9)"; ctx.fillRect(MAIN_W,0,GAP*2,H);
-  // Animated divider glow
-  const ta=Date.now()*0.003,alpha=0.35+0.2*Math.sin(ta);
-  ctx.fillStyle=`rgba(${hexRgb(me.color)},${alpha.toFixed(2)})`; ctx.fillRect(MAIN_W+GAP-1,0,2,H);
+  // Draw dividers
+  for(let d=1;d<=3;d++){
+    const dx = d*pw + (d-1)*DIVW;
+    ctx.fillStyle="rgba(0,0,0,0.95)"; ctx.fillRect(dx,0,DIVW,H);
+    const alpha=0.45+0.2*Math.sin(Date.now()*0.003+d);
+    ctx.fillStyle=`rgba(${hexRgb(PLAYER_COLORS[(d-1)%4])},${alpha.toFixed(2)})`; ctx.fillRect(dx+1,0,1,H);
+  }
 
-  // Draw main pane (local player) — physics run here
-  drawPane(me, 0, 0, MAIN_W, MAIN_H, true);
-
-  // Draw 3 opponent mini panes — Bug3: isLocal=false, no row-landing physics
-  // Falling word still animates via coordinator (same seed), rows from network
-  opponents.forEach((oppIdx,slot)=>{
-    const sy=slot*(MINI_H+GAP);
-    if(slot>0){ ctx.fillStyle="rgba(0,0,0,0.9)"; ctx.fillRect(MAIN_W+GAP*2,sy-GAP,MINI_W,GAP); }
-    drawPane(players[oppIdx], MAIN_W+GAP*2, sy, MINI_W, MINI_H, false);
-  });
+  // Draw all 4 panes — force isNarrow=false so they all look identical to 2P
+  for(let i=0;i<4;i++){
+    const px2 = i*(pw+DIVW);
+    drawPane4(players[i], px2, 0, pw, ph, i===localPlayerIdx);
+  }
 
   checkMultiGameOver();
   drawMultiForfeitOverlay();
+}
+
+// drawPane4: identical to drawPane but always treats pane as full-size (no isNarrow logic)
+function drawPane4(p, px, py, pw, ph, isLocal){
+  const headerH=36, inputH=44;
+  const PLAY_H=ph-headerH-inputH;
+  const pTop=py+headerH, pBottom=py+ph-inputH;
+  const nCols=4;
+  const colStep=Math.floor((pw-16)/nCols);
+  const pCols=Array.from({length:nCols},(_,i)=>8+i*colStep);
+  const pRowH=30;
+  const esc=getEscalation(p.score);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px,py,pw,ph); ctx.clip();
+
+  ctx.fillStyle="rgba(3,3,14,0.82)";
+  ctx.fillRect(px,py,pw,ph);
+
+  ctx.strokeStyle=`rgba(${hexRgb(p.color)},0.30)`;
+  ctx.lineWidth=1;
+  ctx.strokeRect(px+1,py+1,pw-2,ph-2);
+
+  if(esc.danger>=3){const pulse=0.04+0.04*Math.sin(Date.now()*0.008);ctx.fillStyle=`rgba(255,20,50,${pulse})`;ctx.fillRect(px,py,pw,ph);}
+  else if(esc.danger>=2){const pulse=0.02+0.02*Math.sin(Date.now()*0.005);ctx.fillStyle=`rgba(255,120,0,${pulse})`;ctx.fillRect(px,py,pw,ph);}
+
+  if(isLocal&&esc.danger>p.lastEscDanger){p.lastEscDanger=esc.danger;p.escFlashTimer=90;p.escFlashLabel=esc.label;sfxCombo();}
+
+  // Physics
+  if(p.falling){
+    p.falling.yRatio=(p.falling.yRatio||0)+p.falling.speed/PLAY_H;
+    const limitRatio=Math.max(0,(PLAY_H-p.rows.length*pRowH)/PLAY_H);
+    if(p.falling.yRatio>=limitRatio){
+      if(isLocal){
+        p.rows.push({text:p.falling.text,col:p.falling.col}); sfxLand();
+        spawnParticles(p.particles,px+pCols[p.falling.col%nCols]+10,pTop+limitRatio*PLAY_H,C.amber,5);
+        p.landingFlash={text:p.falling.text,col:p.falling.col,yRatio:limitRatio,timer:8};
+        const maxRows=Math.max(3,Math.floor((PLAY_H-10)/pRowH));
+        if(p.rows.length>maxRows) p.dead=true;
+        p.falling=p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
+      }
+    }
+  }
+
+  // Rows
+  for(let i=0;i<p.rows.length;i++){
+    const r=p.rows[i],wx=px+pCols[r.col%nCols],wy=pBottom-i*pRowH;
+    const fontSize=10;
+    ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(r.text).width;
+    const dangerRatio=p.rows.length/12;
+    const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
+    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
+    ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
+    ctx.lineWidth=1; ctx.strokeRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
+    pxDraw(r.text,wx,wy,rowClr,fontSize,true);
+  }
+
+  // Falling word
+  if(p.falling){
+    const fx=px+pCols[p.falling.col%nCols];
+    const fyPx=pTop+(p.falling.yRatio||0)*PLAY_H;
+    p.falling.x=fx; p.falling.y=fyPx;
+    const fontSize=11;
+    ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
+    const len=p.falling.text.length;
+    const wordClr=len<=3?C.green:len<=5?C.teal:len<=8?C.amber:C.red;
+    ctx.fillStyle="rgba(0,180,255,0.10)"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+    ctx.strokeStyle="rgba(0,200,255,0.45)"; ctx.lineWidth=1; ctx.strokeRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+    pxDraw(p.falling.text,fx,fyPx,wordClr,fontSize,true);
+  }
+
+  // Landing flash
+  if(p.landingFlash){
+    if(!p.dead) p.landingFlash.timer--;
+    if(p.landingFlash.timer<=0){p.landingFlash=null;}
+    else{
+      const lf=p.landingFlash,fx=px+pCols[lf.col%nCols],fyPx=pTop+lf.yRatio*PLAY_H;
+      const fontSize=11;
+      ctx.globalAlpha=(lf.timer/8)*0.7; ctx.font=`${fontSize}px ${PX}`;
+      const tw=ctx.measureText(lf.text).width;
+      ctx.fillStyle="#ffffff"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Particles
+  for(let i=p.particles.length-1;i>=0;i--){
+    const pt=p.particles[i]; pt.x+=pt.vx; pt.y+=pt.vy; pt.vy+=0.12; pt.life-=0.04;
+    if(pt.life<=0){p.particles.splice(i,1);continue;}
+    ctx.globalAlpha=pt.life; ctx.fillStyle=pt.color; ctx.fillRect(pt.x,pt.y,pt.size,pt.size);
+  }
+  ctx.globalAlpha=1;
+
+  // Header
+  ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(px,py,pw,headerH);
+  ctx.fillStyle=p.color; ctx.fillRect(px,py+headerH-2,pw,2);
+  ctx.font=`7px ${PX}`;
+  const dispName=p.name.length>8?p.name.slice(0,8):p.name;
+  const nw=ctx.measureText(dispName).width;
+  ctx.shadowColor=p.color; ctx.shadowBlur=6; ctx.fillStyle=p.color;
+  ctx.fillText(dispName,px+pw/2-nw/2,py+headerH-6); ctx.shadowBlur=0;
+  pxDraw(`${p.score}`,px+5,py+headerH-6,C.amber,7,false);
+  if(p.combo>1){const cs=`x${p.combo}`;ctx.font=`6px ${PX}`;const cw=ctx.measureText(cs).width;pxDraw(cs,px+pw-cw-5,py+headerH-6,p.combo>=5?C.amber:C.green,6,false);}
+
+  // Active pulse border for local player
+  if(isLocal){
+    const ta=Date.now()*0.006,alpha=0.4+0.35*Math.sin(ta);
+    ctx.strokeStyle=`rgba(${hexRgb(p.color)},${alpha.toFixed(2)})`;
+    ctx.lineWidth=2; ctx.strokeRect(px+1,py+1,pw-2,ph-2);
+  }
+
+  // Input bar
+  ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(px,py+ph-inputH,pw,inputH);
+  ctx.fillStyle=p.color; ctx.fillRect(px,py+ph-inputH,pw,2);
+  if(isLocal&&!p.dead){
+    const cursor=Math.floor(Date.now()/400)%2===0?"_":" ";
+    const display=p.typed+cursor;
+    ctx.font=`9px ${PX}`; const itw=ctx.measureText(display).width;
+    pxDraw(display,px+pw/2-itw/2,py+ph-inputH/2+4,p.color,9,true);
+  } else if(!isLocal){
+    const remTyped=p.typed||"";
+    const dotLabel=remTyped.length>0?remTyped:"●";
+    ctx.font=`7px ${PX}`; const dlw=ctx.measureText(dotLabel).width;
+    ctx.shadowColor=C.green; ctx.shadowBlur=Math.floor(Date.now()/400)%2===0?5:0;
+    ctx.fillStyle=remTyped.length>0?p.color:C.green;
+    ctx.fillText(dotLabel,px+pw/2-dlw/2,py+ph-inputH/2+4); ctx.shadowBlur=0;
+  }
+
+  // Dead overlay
+  if(p.dead){
+    ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(px,py,pw,ph);
+    const dtxt="ELIMINATED";
+    ctx.font=`9px ${PX}`; const dw=ctx.measureText(dtxt).width;
+    pxDraw(dtxt,px+pw/2-dw/2,py+ph/2,C.red,9,true);
+    ctx.font=`7px ${PX}`; const stxt=`${p.score}`;
+    const sw=ctx.measureText(stxt).width;
+    pxDraw(stxt,px+pw/2-sw/2,py+ph/2+16,C.amber,7,false);
+  }
+
+  // Last standing banner
+  if(lastStanding&&lastStanding===p&&!p.dead&&isLocal){
+    const alpha=Math.min(1,(180-lastStandingTimer)/30);
+    ctx.globalAlpha=alpha*(0.7+0.3*Math.sin(Date.now()*0.006));
+    ctx.font=`9px ${PX}`; const bt="★ LAST STANDING ★"; const bw=ctx.measureText(bt).width;
+    ctx.fillStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=12;
+    ctx.fillText(bt,px+pw/2-bw/2,py+headerH+20); ctx.shadowBlur=0; ctx.globalAlpha=1;
+  }
+
+  // Esc flash
+  if(isLocal&&p.escFlashTimer>0){
+    p.escFlashTimer--;
+    const alpha=Math.min(1,p.escFlashTimer/20);
+    const flashClr=esc.danger>=3?"#ff2244":esc.danger>=2?"#ffaa00":p.color;
+    ctx.globalAlpha=alpha; ctx.font=`11px ${PX}`; const fw=ctx.measureText(p.escFlashLabel).width;
+    pxDraw(p.escFlashLabel,px+pw/2-fw/2,py+ph/2,flashClr,11,true); ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
 }
 
 function game2P(){
