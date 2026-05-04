@@ -644,15 +644,18 @@ function tickMultiSpawnCoordinator(){
   const sharedSpeed=(MULTI_CFG.baseSpeed+seededRand(speedSeed)*MULTI_CFG.rand)*esc.mult;
   const colSeed=multiGameSeed*1000+currentTick*7919+55555;
   const sharedCol=Math.floor(seededRand(colSeed)*4);
-  alive.forEach((p, pIdx)=>{
+  // Assign to ALL non-dead players — including opponents on this browser
+  // Every browser runs this same code with the same seed → same word/col/speed
+  // for each player slot, so the opponent pane is always in sync visually.
+  players.forEach((p)=>{
+    if(p.dead) return;
+    if(p.falling) return; // already has a word in flight
     const activeSet = new Set(p.rows.map(r=>r.text));
     const wordSeed  = multiGameSeed*1000 + currentTick*7919 + 33331 + p.id*997;
     const wordText  = getMultiWord(sharedLength, activeSet, wordSeed);
-    // Bug9: pre-compute x based on first pane's column layout so particles work
-    // (actual render x is recomputed per pane, this is just a fallback)
     const fallback_x = 40 + sharedCol * 60;
-    p.pendingSpawn = {text:wordText, col:sharedCol, yRatio:0, speed:sharedSpeed, x:fallback_x, y:0};
-    if(!p.falling){ p.falling=p.pendingSpawn; p.pendingSpawn=null; p.spawnTimer=0; }
+    p.falling = {text:wordText, col:sharedCol, yRatio:0, speed:sharedSpeed, x:fallback_x, y:0};
+    p.spawnTimer = 0;
   });
 }
 function pickLengthFromSeed(seed,avgScore){
@@ -1151,8 +1154,9 @@ function applyRemoteStates(){
     p.name=(rs.name||(lobbyPeers[pid]?.name)||PLAYER_NAMES[slot]).toUpperCase();
     p.score=rs.score||0; p.combo=rs.combo||0; p.dead=rs.dead||false;
     p.typed=rs.typed||"";
+    // Sync rows from network — but NEVER touch p.falling:
+    // the coordinator assigns it deterministically on every browser independently
     if(rs.rows!==undefined) p.rows=rs.rows;
-    // falling intentionally not synced here
   });
 }
 
