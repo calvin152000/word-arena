@@ -454,7 +454,24 @@ async function submitJoinCode(){
       });
     });
     hostConn.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
-    hostConn.on("close",()=>{joinConnecting=false;joinErrorMsg="HOST DISCONNECTED";});
+    hostConn.on("close",()=>{
+      joinConnecting=false;
+      // Host dropped — clean up and kick guest back to menu
+      sfxMiss();
+      lobbyPeers={}; remoteStates={};
+      lobby.code=null; lobby.players=0; lobby.role=null;
+      myReady=false; lobbyReadyCount=0;
+      countdownActive=false; countdownValue=3;
+      if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
+      if(rematchTimeout){clearTimeout(rematchTimeout);rematchTimeout=null;}
+      if(rematchTickInterval){clearInterval(rematchTickInterval);rematchTickInterval=null;}
+      hostConn=null;
+      resetAll();
+      state="menu"; startBGM("menu");
+      // Show a brief toast on the menu screen
+      joinErrorMsg="HOST DISCONNECTED";
+      setTimeout(()=>{joinErrorMsg="";},3000);
+    });
   });
   myPeer.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
   setTimeout(()=>{if(joinConnecting){joinConnecting=false;joinErrorMsg="TIMEOUT";sfxMiss();}},8000);
@@ -530,6 +547,22 @@ function onLobbyMsg(data, fromConn){
     returnToLobby();
 
   } else if(type==="leave"){
+    // If the host itself is leaving, kick guest back to menu
+    if(lobby.role==="join" && from===lobby.hostPeerId){
+      sfxMiss();
+      lobbyPeers={}; remoteStates={};
+      lobby.code=null; lobby.players=0; lobby.role=null;
+      myReady=false; lobbyReadyCount=0;
+      countdownActive=false; countdownValue=3;
+      if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
+      if(rematchTimeout){clearTimeout(rematchTimeout);rematchTimeout=null;}
+      if(rematchTickInterval){clearInterval(rematchTickInterval);rematchTickInterval=null;}
+      resetAll();
+      state="menu"; startBGM("menu");
+      joinErrorMsg="HOST LEFT THE LOBBY";
+      setTimeout(()=>{joinErrorMsg="";},3000);
+      return;
+    }
     delete lobbyPeers[from]; delete remoteStates[from];
     lobby.players=lobby.role==="host"?Object.keys(lobbyPeers).length+1:Object.keys(lobbyPeers).length+2;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
@@ -1499,6 +1532,15 @@ function menu(){
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
   if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",560,C.dim+"ff",10,false);
   if(username){ctx.font=`8px ${PX}`;pxDraw("HI, "+username.toUpperCase()+"!",14,H-16,C.purple,8,true);}
+  // Toast notification (e.g. host disconnected)
+  if(joinErrorMsg){
+    const toastW=360,toastH=36,toastX=W/2-toastW/2,toastY=H-60;
+    ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(toastX,toastY,toastW,toastH);
+    ctx.strokeStyle=C.red; ctx.lineWidth=2; ctx.strokeRect(toastX,toastY,toastW,toastH);
+    ctx.font=`8px ${PX}`; const tw=ctx.measureText(joinErrorMsg).width;
+    ctx.shadowColor=C.red; ctx.shadowBlur=8; ctx.fillStyle=C.red;
+    ctx.fillText(joinErrorMsg,W/2-tw/2,toastY+toastH/2+4); ctx.shadowBlur=0;
+  }
 }
 function difficultyMenu(){centered("SELECT DIFFICULTY",110,C.purple,16,true);diffButtons.forEach((b,i)=>pixelBox(b,diffColors[i]||C.teal));}
 function multiMenu(){centered("MULTIPLAYER MODE",110,C.teal,16,true);multiButtons.forEach((b,i)=>pixelBox(b,multiColors[i]));}
