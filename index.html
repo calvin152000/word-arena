@@ -551,6 +551,8 @@ function onGameMsg(data, fromConn){
       // Sync score/combo too
       if(data.score!==undefined) players[slot].score = data.score;
       if(data.combo!==undefined) players[slot].combo = data.combo;
+      // Sync rows immediately so stacked words appear without waiting for next heartbeat
+      if(data.rows!==undefined) players[slot].rows = data.rows;
     }
     // Host relays to other guests
     if(lobby.role==="host"){
@@ -594,6 +596,7 @@ function sendGameState(){
     score:me.score, combo:me.combo, dead:me.dead,
     typed:me.typed||"",
     slotIdx:localPlayerIdx,
+    // rows always sent so remote panes show correct stacked words immediately
     rows:me.rows,
     // falling NOT sent — deterministic coordinator runs identically on every
     // browser, so all players already see the same word at the same position.
@@ -837,7 +840,23 @@ function resetAll(){
     players[localPlayerIdx].name=username?username.toUpperCase():PLAYER_NAMES[localPlayerIdx];
     const guestList=Object.entries(lobbyPeers);
     guestList.forEach(([pid,peer],i)=>{
-      const slot=i+(localPlayerIdx===0?1:0);
+      // Use slotIdx from remoteStates if already set by gameseed message (authoritative)
+      // Otherwise fall back to sequential assignment offset by our own slot
+      let slot;
+      if(remoteStates[pid]&&remoteStates[pid].slotIdx!==undefined){
+        slot=remoteStates[pid].slotIdx;
+      } else {
+        // Assign slots sequentially, skipping localPlayerIdx
+        const taken=new Set([localPlayerIdx]);
+        let assignIdx=0;
+        for(let s=0;s<playerCount;s++){
+          if(!taken.has(s)){
+            if(assignIdx===i){ slot=s; break; }
+            assignIdx++;
+          }
+        }
+        if(slot===undefined) slot=i+(localPlayerIdx===0?1:0);
+      }
       if(players[slot]) players[slot].name=(peer.name||"P?").toUpperCase();
       if(!remoteStates[pid]) remoteStates[pid]={};
       remoteStates[pid].slotIdx=slot;
@@ -894,6 +913,9 @@ function sendWordCleared(p){
     slotIdx:localPlayerIdx,
     score:p.score,
     combo:p.combo,
+    // include rows so remote screens update stacked words immediately
+    // without waiting for the next gamestate heartbeat
+    rows:p.rows,
   };
   if(lobby.role==="host") guestConns.forEach(c=>{try{c.send(msg);}catch(e){}});
   else if(hostConn){try{hostConn.send(msg);}catch(e){}}
@@ -1118,19 +1140,25 @@ function drawPane(p, px, py, pw, ph, isLocal){
 
   // ── PHYSICS ──────────────────────────────────────────────────────────────
   if(p.falling){
-    // Bug12: advance yRatio relative to this pane's PLAY_H so visual speed
+    // advance yRatio relative to this pane's PLAY_H so visual speed
     // is identical whether pane is large (main) or small (mini)
     p.falling.yRatio = (p.falling.yRatio||0) + p.falling.speed / PLAY_H;
     const limitRatio = Math.max(0, (PLAY_H - p.rows.length*pRowH) / PLAY_H);
     if(p.falling.yRatio >= limitRatio){
       if(isLocal){
+        // Only local player runs landing physics, row stacking, and game-over check
         p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
         spawnParticles(p.particles, px+pCols[p.falling.col%nCols]+10, pTop+limitRatio*PLAY_H, C.amber, 5);
         p.landingFlash = {text:p.falling.text, col:p.falling.col, yRatio:limitRatio, timer:8};
         const maxRows = Math.max(3, Math.floor((PLAY_H-10)/pRowH));
         if(p.rows.length > maxRows) p.dead = true;
+        // Reset falling word only for local player — coordinator will assign next
+        p.falling = p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
       }
-      p.falling = p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
+      // For remote players: let the falling word stay clamped at the bottom
+      // visually until the coordinator assigns a new word (next tick).
+      // Rows are synced via network (gamestate rows field), NOT pushed locally.
+      // This prevents the word from vanishing before the network row-sync arrives.
     }
   }
 
@@ -1280,7 +1308,15 @@ function applyRemoteStates(){
     p.typed=rs.typed||"";
     // Sync rows from network — but NEVER touch p.falling:
     // the coordinator assigns it deterministically on every browser independently
-    if(rs.rows!==undefined) p.rows=rs.rows;
+    if(rs.rows!==undefined){
+      const prevLen=p.rows.length;
+      p.rows=rs.rows;
+      // If rows increased, the remote player's word landed — clear the visually
+      // clamped falling word so the coordinator can assign the next word this tick.
+      if(p.rows.length>prevLen && p.falling){
+        p.falling=null; p.spawnTimer=0;
+      }
+    }
   });
 }
 
