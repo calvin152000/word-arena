@@ -377,11 +377,9 @@ const multiButtons=[button("2 PLAYER",150,220,300,60),button("4 PLAYER",150,310,
 const hostJoinButtons=[button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
 // ── NETWORK ───────────────────────────────────────────────────────────────────
-// Architecture: HOST is the central relay for all 4 players.
-// Every guest sends their own gamestate to host.
-// Host forwards each guest's state to all OTHER guests.
-// Host also broadcasts its own state to all guests.
-// Result: every player has all 4 states at all times.
+// Architecture: HOST is the central relay for all players.
+// When host leaves: first guest (by joinOrder) becomes new host transparently.
+// Everyone stays in lobby — the leaving player's slot just shows WAITING again.
 
 let myPeer=null, hostConn=null, guestConns=[];
 let myPlayerId=Math.random().toString(36).slice(2,8).toUpperCase();
@@ -391,61 +389,124 @@ let leaveLobbyConfirm=false,myReady=false,lobbyReadyCount=0;
 let countdownActive=false,countdownValue=3,countdownInterval=null;
 let joinInput="",joinErrorMsg="",joinConnecting=false;
 let isOnlineGame=false, localPlayerIdx=0, gameSessionId=0;
+// joinOrder: ordered list of all playerIds (host first), synced to all peers
+let joinOrder=[];
 
-// Per-player network state (indexed 0-3 by join order)
-// localPlayerIdx = my slot. Others are remote.
-let remoteStates = {}; // peerId → { score, combo, dead, rows, falling, typed }
-
+let remoteStates = {}; // peerId → { score, combo, dead, rows, falling, typed, slotIdx }
 const SEND_INTERVAL_MS = 50;
 let lastSendTime = 0;
 
 function generateCode(){return Math.random().toString(36).substring(2,7).toUpperCase();}
 
-async function hostGame(){
-  lobby.code=generateCode(); lobby.players=1; lobby.role="host";
-  lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
-  state="lobby_wait";
-  if(myPeer){ try{myPeer.destroy();}catch(e){} }
-
-  myPeer=new Peer("wArena-"+lobby.code, {
-    config:{
-      iceServers:[
-        {urls:"stun:stun.l.google.com:19302"},
-        {urls:"stun:stun1.l.google.com:19302"},
-        {urls:"stun:global.stun.twilio.com:3478"},
-      ]
-    }
-  });
-
-  myPeer.on("open",()=>{
-    myPeer.on("connection",(conn)=>{
-      conn.on("open",()=>{
-        guestConns.push(conn);
-        conn.on("data",(data)=>{
-          if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
-          else onLobbyMsg(data, conn);
-        });
-        conn.send({type:"welcome",from:myPlayerId,name:username||"HOST",
-          hostReady:myReady,hostPeerId:myPlayerId,
-          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
-      });
-      conn.on("close",()=>{
-        guestConns=guestConns.filter(c=>c!==conn);
-        if(conn._peerId){ delete lobbyPeers[conn._peerId]; delete remoteStates[conn._peerId]; }
-        lobby.players=Object.keys(lobbyPeers).length+1;
-        lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
-        broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
-          hostPeerId:myPlayerId,peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-        if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
-      });
-      conn.on("error",(e)=>console.warn("Guest conn error:",e));
+// ── ATTACH GUEST CONNECTION HANDLERS ─────────────────────────────────────────
+function attachGuestConn(conn){
+  conn.on("open",()=>{
+    guestConns.push(conn);
+    conn.on("data",(data)=>{
+      if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data,conn);
+      else onLobbyMsg(data,conn);
+    });
+    conn.send({
+      type:"welcome", from:myPlayerId, name:username||"HOST",
+      hostReady:myReady, hostPeerId:myPlayerId, joinOrder:[...joinOrder],
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
     });
   });
-  myPeer.on("error",(e)=>{
-    console.warn("Host peer error:",e);
-    // Show error in lobby if still waiting
-    if(state==="lobby_wait") joinErrorMsg="HOST ERROR - TRY AGAIN";
+  conn.on("close",()=>{
+    guestConns=guestConns.filter(c=>c!==conn);
+    const pid=conn._peerId;
+    if(pid){ delete lobbyPeers[pid]; delete remoteStates[pid]; joinOrder=joinOrder.filter(id=>id!==pid); }
+    lobby.players=Object.keys(lobbyPeers).length+1;
+    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+    broadcastLobby({type:"playerleft",from:pid||"",total:lobby.players,joinOrder:[...joinOrder],
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
+    if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
+    sfxMiss();
   });
+}
+
+async function hostGame(){
+  lobby.code=generateCode(); lobby.players=1; lobby.role="host";
+  lobbyPeers={}; joinOrder=[myPlayerId]; myReady=false; lobbyReadyCount=0;
+  countdownActive=false; countdownValue=3; state="lobby_wait";
+  if(myPeer) myPeer.destroy();
+  myPeer=new Peer("wArena-"+lobby.code);
+  myPeer.on("open",()=>{ myPeer.on("connection",(conn)=>{ attachGuestConn(conn); }); });
+  myPeer.on("error",(e)=>console.warn("Host error:",e));
+}
+
+// ── HOST MIGRATION ────────────────────────────────────────────────────────────
+// When the host's connection closes, the guest with the earliest joinOrder slot
+// takes over as host — opens a new Peer on the same room code, stays in lobby.
+function handleHostGone(){
+  const departedId=lobby.hostPeerId;
+  if(departedId){ delete lobbyPeers[departedId]; delete remoteStates[departedId]; }
+  joinOrder=joinOrder.filter(id=>id!==departedId);
+  hostConn=null;
+  sfxMiss();
+
+  // Election: pick the first remaining player in joinOrder as new host
+  const allRemaining=[myPlayerId,...Object.keys(lobbyPeers)];
+  const newHostId=joinOrder.find(id=>allRemaining.includes(id))||myPlayerId;
+
+  if(newHostId===myPlayerId){
+    // I am the new host
+    becomeHost();
+  } else {
+    // Wait — new host will send "hostready" broadcast and we reconnect
+    lobby.hostPeerId=newHostId;
+    const peer=lobbyPeers[newHostId];
+    lobby.hostName=(peer?.name||"P?").toUpperCase();
+    lobby.hostReady=false;
+    lobby.players=Object.keys(lobbyPeers).length+1; // +1 for new host (not in our lobbyPeers since we're still guest)
+    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+    joinErrorMsg=`${lobby.hostName} IS NOW HOST`;
+    setTimeout(()=>{joinErrorMsg="";},3000);
+    // Reconnect to new host (500ms delay to let them open their Peer first)
+    setTimeout(()=>reconnectToNewHost(newHostId,lobby.code),600);
+  }
+}
+
+function becomeHost(){
+  const code=lobby.code;
+  lobby.role="host"; lobby.hostPeerId=myPlayerId;
+  lobby.hostName=(username||"P?").toUpperCase(); lobby.hostReady=myReady;
+  if(myPeer){try{myPeer.destroy();}catch(e){}}
+  // Remove our own entry from lobbyPeers (we're host now, not a guest of ourselves)
+  delete lobbyPeers[myPlayerId];
+  myPeer=new Peer("wArena-"+code);
+  myPeer.on("open",()=>{
+    myPeer.on("connection",(conn)=>{ attachGuestConn(conn); });
+    guestConns=[];
+    lobby.players=Object.keys(lobbyPeers).length+1;
+    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+    // Broadcast to all remaining peers that we are now host, they should reconnect
+    // We can't send via guestConns (just reset) — peers will get this via "hostready"
+    // which they receive when they reconnect after their old hostConn closes.
+    joinErrorMsg="YOU ARE NOW THE HOST";
+    setTimeout(()=>{joinErrorMsg="";},3000);
+    sfxPlayerJoin();
+  });
+  myPeer.on("error",(e)=>console.warn("New host peer error:",e));
+}
+
+function reconnectToNewHost(newHostId, code){
+  if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
+  if(myPeer){try{myPeer.destroy();}catch(e){}}
+  myPeer=new Peer();
+  myPeer.on("open",()=>{
+    hostConn=myPeer.connect("wArena-"+code,{reliable:true});
+    hostConn.on("open",()=>{
+      hostConn.send({type:"join",from:myPlayerId,name:username||"P?",rejoin:true});
+      hostConn.on("data",(data)=>{
+        if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data,hostConn);
+        else onLobbyMsg(data,hostConn);
+      });
+    });
+    hostConn.on("error",()=>{ joinErrorMsg="RECONNECT FAILED"; sfxMiss(); });
+    hostConn.on("close",()=>{ handleHostGone(); });
+  });
+  myPeer.on("error",()=>{ joinErrorMsg="RECONNECT FAILED"; sfxMiss(); });
 }
 
 function joinGame(){joinInput="";joinErrorMsg="";joinConnecting=false;state="joingame";}
@@ -455,90 +516,66 @@ async function submitJoinCode(){
   if(val.length<3){joinErrorMsg="ENTER A CODE!";sfxMiss();return;}
   joinConnecting=true; joinErrorMsg=""; lobby.code=val; lobby.role="join";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
-  if(myPeer){ try{myPeer.destroy();}catch(e){} }
-
-  // Use public STUN servers to improve WebRTC connection success rate
-  myPeer=new Peer({
-    config:{
-      iceServers:[
-        {urls:"stun:stun.l.google.com:19302"},
-        {urls:"stun:stun1.l.google.com:19302"},
-        {urls:"stun:global.stun.twilio.com:3478"},
-      ]
-    }
-  });
-
-  const joinTimer = setTimeout(()=>{
-    if(joinConnecting){
-      joinConnecting=false;
-      joinErrorMsg="TIMEOUT — CHECK CODE & TRY AGAIN";
-      sfxMiss();
-    }
-  }, 15000); // extended to 15s
-
+  if(myPeer) myPeer.destroy();
+  myPeer=new Peer();
   myPeer.on("open",()=>{
-    hostConn=myPeer.connect("wArena-"+val,{reliable:true,serialization:"json"});
-
+    hostConn=myPeer.connect("wArena-"+val,{reliable:true});
     hostConn.on("open",()=>{
-      clearTimeout(joinTimer);
       joinConnecting=false; joinErrorMsg=""; state="lobby_wait";
       hostConn.send({type:"join",from:myPlayerId,name:username||"P?"});
       hostConn.on("data",(data)=>{
-        if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
-        else onLobbyMsg(data, hostConn);
-      });
-      hostConn.on("close",()=>{
-        if(state==="lobby_wait"||state==="game"){
-          joinErrorMsg="HOST DISCONNECTED";
-          if(state==="game"){ state="gameover_multi"; stopBGM(); }
-          else { state="joingame"; }
-        }
+        if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data,hostConn);
+        else onLobbyMsg(data,hostConn);
       });
     });
-
-    hostConn.on("error",(err)=>{
-      clearTimeout(joinTimer);
-      joinConnecting=false;
-      joinErrorMsg="CANNOT CONNECT!";
-      sfxMiss();
-      console.warn("hostConn error:",err);
-    });
+    hostConn.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
+    hostConn.on("close",()=>{ handleHostGone(); });
   });
-
-  myPeer.on("error",(err)=>{
-    clearTimeout(joinTimer);
-    joinConnecting=false;
-    joinErrorMsg="PEER ERROR — TRY AGAIN";
-    sfxMiss();
-    console.warn("Peer error:",err);
-  });
+  myPeer.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
+  setTimeout(()=>{if(joinConnecting){joinConnecting=false;joinErrorMsg="TIMEOUT";sfxMiss();}},8000);
 }
 
 function onLobbyMsg(data, fromConn){
-  const {type,from,name,peers}=data;
+  const {type,from,name}=data;
   if(type==="welcome"){
-    if(peers) peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
-    lobby.hostName=name||"HOST"; lobby.hostReady=data.hostReady||false; lobby.hostPeerId=data.hostPeerId||from;
+    if(data.peers) data.peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
+    lobby.hostName=(name||"HOST").toUpperCase(); lobby.hostReady=data.hostReady||false;
+    lobby.hostPeerId=data.hostPeerId||from;
     lobby.players=Object.keys(lobbyPeers).length+2;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
+    if(data.joinOrder) joinOrder=data.joinOrder;
     sfxPlayerJoin();
   } else if(type==="join"){
-    if(!lobbyPeers[from]) sfxPlayerJoin();
+    const isRejoin=data.rejoin&&lobbyPeers[from];
+    if(!lobbyPeers[from]){ sfxPlayerJoin(); }
     lobbyPeers[from]={name:name||from,ready:false,conn:fromConn};
     if(fromConn) fromConn._peerId=from;
+    if(!joinOrder.includes(from)) joinOrder.push(from);
     lobby.players=Object.keys(lobbyPeers).length+1;
-    broadcastLobby({type:"joined",from,name,total:lobby.players,hostPeerId:myPlayerId,
+    broadcastLobby({type:"playerjoin",from,name,total:lobby.players,hostPeerId:myPlayerId,
+      joinOrder:[...joinOrder],
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-  } else if(type==="joined"){
-    const isDisc=(from==="__disconnect__");
+  } else if(type==="playerjoin"){
+    if(!lobbyPeers[from]) lobbyPeers[from]={name:name||from,ready:false};
+    if(data.peers){
+      data.peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
+    }
+    if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
+    if(data.joinOrder) joinOrder=data.joinOrder;
+    lobby.players=data.total||Object.keys(lobbyPeers).length+2;
+    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
+    sfxPlayerJoin();
+  } else if(type==="playerleft"){
+    // A player disconnected — remove them from our view, stay in lobby
+    if(from){ delete lobbyPeers[from]; delete remoteStates[from]; }
+    if(data.joinOrder) joinOrder=data.joinOrder;
     if(data.peers){
       Object.keys(lobbyPeers).forEach(id=>{if(!data.peers.find(p=>p.id===id)&&id!==myPlayerId) delete lobbyPeers[id];});
-      data.peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
-    } else if(!isDisc&&!lobbyPeers[from]) lobbyPeers[from]={name:name||from,ready:false};
-    if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
-    lobby.players=data.total||Object.keys(lobbyPeers).length+1;
+    }
+    lobby.players=data.total||Object.keys(lobbyPeers).length+2;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
-    if(!isDisc) sfxPlayerJoin(); else sfxMiss();
+    if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
+    sfxMiss();
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready=data.isReady;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
@@ -557,34 +594,20 @@ function onLobbyMsg(data, fromConn){
     if(data.value>0) sfxCountdownBeep();
     else { sfxCountdownGo(); startGame("multi",lobby.required); }
   } else if(type==="gameseed"){
-    // Save seed values — these must survive the upcoming resetAll() call in startGame
-    multiGameSeed    = data.seed;
-    multiGameStartMs = data.startMs;
-    lastSpawnTick    = -1;
-    // Set our slot from host's authoritative order
-    if(data.slotOrder){
-      const mySlot = data.slotOrder.indexOf(myPlayerId);
-      if(mySlot !== -1) localPlayerIdx = mySlot;
-    }
+    multiGameSeed=data.seed; multiGameStartMs=data.startMs; lastSpawnTick=-1;
+    if(data.slotOrder){ const mySlot=data.slotOrder.indexOf(myPlayerId); if(mySlot!==-1) localPlayerIdx=mySlot; }
   } else if(type==="rematchvote"){
-    rematchVotes[from] = data.playAgain;
-    if(lobby.role==="host") broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain, name:data.name});
-    if(!data.playAgain){
-      // This peer is leaving — remove them
-      delete lobbyPeers[from]; delete remoteStates[from];
-      lobby.players = Object.keys(lobbyPeers).length+1;
-    } else {
-      // This peer wants to play again — they'll show up in lobby_wait
-      if(lobbyPeers[from]) lobbyPeers[from].ready = false;
-    }
-
+    rematchVotes[from]=data.playAgain;
+    if(lobby.role==="host") broadcastLobby({type:"rematchvote",from,playAgain:data.playAgain,name:data.name});
+    if(!data.playAgain){ delete lobbyPeers[from]; delete remoteStates[from]; lobby.players=Object.keys(lobbyPeers).length+1; }
+    else { if(lobbyPeers[from]) lobbyPeers[from].ready=false; }
   } else if(type==="rematchresult"){
-    // No longer used but kept for safety
     if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; delete remoteStates[id]; });
     returnToLobby();
-
   } else if(type==="leave"){
+    // Graceful leave — remove from lobby, stay in lobby ourselves
     delete lobbyPeers[from]; delete remoteStates[from];
+    joinOrder=joinOrder.filter(id=>id!==from);
     lobby.players=lobby.role==="host"?Object.keys(lobbyPeers).length+1:Object.keys(lobbyPeers).length+2;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
     if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
@@ -605,6 +628,8 @@ function onGameMsg(data, fromConn){
       // Sync score/combo too
       if(data.score!==undefined) players[slot].score = data.score;
       if(data.combo!==undefined) players[slot].combo = data.combo;
+      // Sync rows immediately so stacked words appear without waiting for next heartbeat
+      if(data.rows!==undefined) players[slot].rows = data.rows;
     }
     // Host relays to other guests
     if(lobby.role==="host"){
@@ -648,6 +673,7 @@ function sendGameState(){
     score:me.score, combo:me.combo, dead:me.dead,
     typed:me.typed||"",
     slotIdx:localPlayerIdx,
+    // rows always sent so remote panes show correct stacked words immediately
     rows:me.rows,
     // falling NOT sent — deterministic coordinator runs identically on every
     // browser, so all players already see the same word at the same position.
@@ -671,7 +697,7 @@ function leaveLobbyChannel(){
   if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
   guestConns.forEach(c=>{try{c.close();}catch(e){} }); guestConns=[];
   if(myPeer){try{myPeer.destroy();}catch(e){} myPeer=null;}
-  lobbyPeers={}; remoteStates={};
+  lobbyPeers={}; remoteStates={}; joinOrder=[];
 }
 
 function startCountdown(){
@@ -891,7 +917,23 @@ function resetAll(){
     players[localPlayerIdx].name=username?username.toUpperCase():PLAYER_NAMES[localPlayerIdx];
     const guestList=Object.entries(lobbyPeers);
     guestList.forEach(([pid,peer],i)=>{
-      const slot=i+(localPlayerIdx===0?1:0);
+      // Use slotIdx from remoteStates if already set by gameseed message (authoritative)
+      // Otherwise fall back to sequential assignment offset by our own slot
+      let slot;
+      if(remoteStates[pid]&&remoteStates[pid].slotIdx!==undefined){
+        slot=remoteStates[pid].slotIdx;
+      } else {
+        // Assign slots sequentially, skipping localPlayerIdx
+        const taken=new Set([localPlayerIdx]);
+        let assignIdx=0;
+        for(let s=0;s<playerCount;s++){
+          if(!taken.has(s)){
+            if(assignIdx===i){ slot=s; break; }
+            assignIdx++;
+          }
+        }
+        if(slot===undefined) slot=i+(localPlayerIdx===0?1:0);
+      }
       if(players[slot]) players[slot].name=(peer.name||"P?").toUpperCase();
       if(!remoteStates[pid]) remoteStates[pid]={};
       remoteStates[pid].slotIdx=slot;
@@ -948,6 +990,9 @@ function sendWordCleared(p){
     slotIdx:localPlayerIdx,
     score:p.score,
     combo:p.combo,
+    // include rows so remote screens update stacked words immediately
+    // without waiting for the next gamestate heartbeat
+    rows:p.rows,
   };
   if(lobby.role==="host") guestConns.forEach(c=>{try{c.send(msg);}catch(e){}});
   else if(hostConn){try{hostConn.send(msg);}catch(e){}}
@@ -1140,10 +1185,9 @@ function bg(){
 // Used for BOTH the local player's main pane and opponents' mini panes.
 // px,py,pw,ph = bounding box on canvas
 // isLocal: true = physics run here; false = animate from network state
-function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
+function drawPane(p, px, py, pw, ph, isLocal){
   const isNarrow=pw<180;
-  const headerH=noHeader?0:(isNarrow?24:36);
-  const inputH=noHeader?0:(isNarrow?28:44);
+  const headerH=isNarrow?24:36, inputH=isNarrow?28:44;
   const PLAY_H=ph-headerH-inputH;
   const pTop=py+headerH, pBottom=py+ph-inputH;
   const nCols=4;
@@ -1173,19 +1217,25 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
 
   // ── PHYSICS ──────────────────────────────────────────────────────────────
   if(p.falling){
-    // Bug12: advance yRatio relative to this pane's PLAY_H so visual speed
+    // advance yRatio relative to this pane's PLAY_H so visual speed
     // is identical whether pane is large (main) or small (mini)
     p.falling.yRatio = (p.falling.yRatio||0) + p.falling.speed / PLAY_H;
     const limitRatio = Math.max(0, (PLAY_H - p.rows.length*pRowH) / PLAY_H);
     if(p.falling.yRatio >= limitRatio){
       if(isLocal){
+        // Only local player runs landing physics, row stacking, and game-over check
         p.rows.push({text:p.falling.text, col:p.falling.col}); sfxLand();
         spawnParticles(p.particles, px+pCols[p.falling.col%nCols]+10, pTop+limitRatio*PLAY_H, C.amber, 5);
         p.landingFlash = {text:p.falling.text, col:p.falling.col, yRatio:limitRatio, timer:8};
         const maxRows = Math.max(3, Math.floor((PLAY_H-10)/pRowH));
         if(p.rows.length > maxRows) p.dead = true;
+        // Reset falling word only for local player — coordinator will assign next
+        p.falling = p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
       }
-      p.falling = p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
+      // For remote players: let the falling word stay clamped at the bottom
+      // visually until the coordinator assigns a new word (next tick).
+      // Rows are synced via network (gamestate rows field), NOT pushed locally.
+      // This prevents the word from vanishing before the network row-sync arrives.
     }
   }
 
@@ -1252,22 +1302,14 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
   ctx.font=`${nameFontSz}px ${PX}`;
   const dispName=isNarrow&&p.name.length>6?p.name.slice(0,6):p.name;
   const nw=ctx.measureText(dispName).width;
-  // ── HEADER BAR ────────────────────────────────────────────────────────────
-  if(!noHeader){
-    ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(px,py,pw,headerH);
-    ctx.fillStyle=p.dead?`rgba(${hexRgb(p.color)},0.3)`:p.color;
-    ctx.fillRect(px,py+headerH-2,pw,2);
-    ctx.font=`${isNarrow?6:7}px ${PX}`;
-    const dispName=p.name||(isLocal?"YOU":"???");
-    const nw=ctx.measureText(dispName).width;
-    ctx.shadowColor=p.color; ctx.shadowBlur=6; ctx.fillStyle=p.color;
-    ctx.fillText(dispName,px+pw/2-nw/2,py+headerH-6); ctx.shadowBlur=0;
-    if(!isNarrow){
-      pxDraw(`${p.score}`,px+5,py+headerH-6,C.amber,7,false);
-      if(p.combo>1){const cs=`x${p.combo}`;ctx.font=`6px ${PX}`;const cw2=ctx.measureText(cs).width;pxDraw(cs,px+pw-cw2-5,py+headerH-6,p.combo>=5?C.amber:C.green,6,false);}
-    } else {
-      ctx.font=`5px ${PX}`; ctx.fillStyle=C.amber; ctx.fillText(`${p.score}`,px+3,py+headerH-5);
-    }
+  ctx.shadowColor=p.color; ctx.shadowBlur=6; ctx.fillStyle=p.color;
+  ctx.fillText(dispName,px+pw/2-nw/2,py+headerH-6); ctx.shadowBlur=0;
+  // Score
+  if(!isNarrow){
+    pxDraw(`${p.score}`,px+5,py+headerH-6,C.amber,7,false);
+    if(p.combo>1){const cs=`x${p.combo}`;ctx.font=`6px ${PX}`;const cw=ctx.measureText(cs).width;pxDraw(cs,px+pw-cw-5,py+headerH-6,p.combo>=5?C.amber:C.green,6,false);}
+  } else {
+    ctx.font=`5px ${PX}`; ctx.fillStyle=C.amber; ctx.fillText(`${p.score}`,px+3,py+headerH-5);
   }
 
   // Active pulse border
@@ -1278,28 +1320,27 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
   }
 
   // ── INPUT BAR ─────────────────────────────────────────────────────────────
-  if(!noHeader){
-    ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(px,py+ph-inputH,pw,inputH);
-    ctx.fillStyle=p.color; ctx.fillRect(px,py+ph-inputH,pw,2);
-    if(isLocal&&!p.dead){
-      const cursor=Math.floor(Date.now()/400)%2===0?"_":" ";
-      const display=p.typed+cursor;
-      const inputFontSz=isNarrow?7:9;
-      ctx.font=`${inputFontSz}px ${PX}`; const itw=ctx.measureText(display).width;
-      pxDraw(display,px+pw/2-itw/2,py+ph-inputH/2+4,p.color,inputFontSz,true);
-    } else if(!isLocal){
-      const remTyped=p.typed||"";
-      const dotLabel=remTyped.length>0?(isNarrow?remTyped.slice(-4):remTyped):"●";
-      const inputFontSz=isNarrow?6:7;
-      ctx.font=`${inputFontSz}px ${PX}`; const dlw=ctx.measureText(dotLabel).width;
-      ctx.shadowColor=C.green; ctx.shadowBlur=Math.floor(Date.now()/400)%2===0?5:0;
-      ctx.fillStyle=remTyped.length>0?p.color:C.green;
-      ctx.fillText(dotLabel,px+pw/2-dlw/2,py+ph-inputH/2+4); ctx.shadowBlur=0;
-    }
+  ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(px,py+ph-inputH,pw,inputH);
+  ctx.fillStyle=p.color; ctx.fillRect(px,py+ph-inputH,pw,2);
+  if(isLocal&&!p.dead){
+    const cursor=Math.floor(Date.now()/400)%2===0?"_":" ";
+    const display=p.typed+cursor;
+    const inputFontSz=isNarrow?7:9;
+    ctx.font=`${inputFontSz}px ${PX}`; const itw=ctx.measureText(display).width;
+    pxDraw(display,px+pw/2-itw/2,py+ph-inputH/2+4,p.color,inputFontSz,true);
+  } else if(!isLocal){
+    // Show remote player's live typed input
+    const remTyped=p.typed||"";
+    const dotLabel=remTyped.length>0?(isNarrow?remTyped.slice(-4):remTyped):"●";
+    const inputFontSz=isNarrow?6:7;
+    ctx.font=`${inputFontSz}px ${PX}`; const dlw=ctx.measureText(dotLabel).width;
+    ctx.shadowColor=C.green; ctx.shadowBlur=Math.floor(Date.now()/400)%2===0?5:0;
+    ctx.fillStyle=remTyped.length>0?p.color:C.green;
+    ctx.fillText(dotLabel,px+pw/2-dlw/2,py+ph-inputH/2+4); ctx.shadowBlur=0;
   }
 
   // ── DEAD OVERLAY ──────────────────────────────────────────────────────────
-  if(p.dead&&!noHeader){
+  if(p.dead){
     ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(px,py,pw,ph);
     const dtxt=isNarrow?"OUT":"ELIMINATED";
     ctx.font=`${isNarrow?8:9}px ${PX}`; const dw=ctx.measureText(dtxt).width;
@@ -1344,7 +1385,15 @@ function applyRemoteStates(){
     p.typed=rs.typed||"";
     // Sync rows from network — but NEVER touch p.falling:
     // the coordinator assigns it deterministically on every browser independently
-    if(rs.rows!==undefined) p.rows=rs.rows;
+    if(rs.rows!==undefined){
+      const prevLen=p.rows.length;
+      p.rows=rs.rows;
+      // If rows increased, the remote player's word landed — clear the visually
+      // clamped falling word so the coordinator can assign the next word this tick.
+      if(p.rows.length>prevLen && p.falling){
+        p.falling=null; p.spawnTimer=0;
+      }
+    }
   });
 }
 
@@ -1354,130 +1403,185 @@ function game4P(){
   applyRemoteStates();
   sendGameState();
 
-  const me        = players[localPlayerIdx];
-  const opponents = [0,1,2,3].filter(i=>i!==localPlayerIdx);
+  // 4 equal panes side by side — identical look to 2P, no narrow mode
+  const DIVW = 3;
+  const pw = Math.floor((W - DIVW * 3) / 4);
+  const ph = H;
 
-  // ── Layout constants ──────────────────────────────────────────────────────
-  const DIVIDER_X = Math.round(W * 0.60); // vertical split
-  const BDIV      = 3;                    // divider bar width
-  const MGAP      = 5;                    // gap around mini panes
-  const MW        = DIVIDER_X - BDIV;     // main pane width
-  const MH        = H;                    // main pane height (full)
-  const RW        = W - DIVIDER_X - BDIV; // right column width
-  const MCARD_H   = Math.floor((H - MGAP * 4) / 3); // each mini card height
-  const MINI_PX   = DIVIDER_X + BDIV + MGAP;        // mini pane x start
-  const MINI_PW   = RW - MGAP * 2;                  // mini pane inner width
-  const HDR_H     = 26;                              // card header height
+  // Draw dividers
+  for(let d=1;d<=3;d++){
+    const dx = d*pw + (d-1)*DIVW;
+    ctx.fillStyle="rgba(0,0,0,0.95)"; ctx.fillRect(dx,0,DIVW,H);
+    const alpha=0.45+0.2*Math.sin(Date.now()*0.003+d);
+    ctx.fillStyle=`rgba(${hexRgb(PLAYER_COLORS[(d-1)%4])},${alpha.toFixed(2)})`; ctx.fillRect(dx+1,0,1,H);
+  }
 
-  // ── Background fills ──────────────────────────────────────────────────────
-  // Right column bg
-  ctx.fillStyle="#07071a";
-  ctx.fillRect(DIVIDER_X, 0, W-DIVIDER_X, H);
-
-  // Vertical divider bar with glow
-  const t0   = Date.now()*0.003;
-  const glow = 0.5+0.3*Math.sin(t0);
-  ctx.fillStyle="#0a0a22"; ctx.fillRect(DIVIDER_X, 0, BDIV, H);
-  ctx.fillStyle=`rgba(${hexRgb(me.color)},${glow.toFixed(2)})`;
-  ctx.fillRect(DIVIDER_X, 0, BDIV, H);
-
-  // ── Draw main pane (local player) ─────────────────────────────────────────
-  drawPane(me, 0, 0, MW, MH, true);
-
-  // ── Draw 3 mini opponent cards ────────────────────────────────────────────
-  opponents.forEach((oppIdx, slot)=>{
-    const p   = players[oppIdx];
-    const cy  = MGAP + slot*(MCARD_H + MGAP);  // card y
-    const cx  = MINI_PX;
-    const cw  = MINI_PW;
-    const ch  = MCARD_H;
-    const clr = p.color;
-
-    // Card shadow
-    ctx.fillStyle="rgba(0,0,0,0.6)";
-    ctx.fillRect(cx+3, cy+3, cw, ch);
-
-    // Card background
-    ctx.fillStyle="#05051a";
-    ctx.fillRect(cx, cy, cw, ch);
-
-    // Card border — glow if player is alive
-    if(!p.dead){
-      ctx.shadowColor=clr; ctx.shadowBlur=p.rows.length>8?12:6;
-    }
-    ctx.strokeStyle=p.dead?"#222244":clr;
-    ctx.lineWidth=2; ctx.strokeRect(cx, cy, cw, ch);
-    ctx.shadowBlur=0;
-
-    // Corner accents
-    const cs=5; ctx.fillStyle=p.dead?"#222244":clr;
-    ctx.fillRect(cx,cy,cs,2);       ctx.fillRect(cx,cy,2,cs);
-    ctx.fillRect(cx+cw-cs,cy,cs,2); ctx.fillRect(cx+cw-2,cy,2,cs);
-    ctx.fillRect(cx,cy+ch-2,cs,2);  ctx.fillRect(cx,cy+ch-cs,2,cs);
-    ctx.fillRect(cx+cw-cs,cy+ch-2,cs,2); ctx.fillRect(cx+cw-2,cy+ch-cs,2,cs);
-
-    // Header bar
-    ctx.fillStyle=p.dead?`rgba(20,20,40,0.9)`:`rgba(${hexRgb(clr)},0.18)`;
-    ctx.fillRect(cx, cy, cw, HDR_H);
-    ctx.fillStyle=p.dead?"#334466":clr;
-    ctx.fillRect(cx, cy+HDR_H-2, cw, 2);
-
-    // Player name in header
-    ctx.font=`7px ${PX}`;
-    const nm = p.name||`P${oppIdx+1}`;
-    const nmw = ctx.measureText(nm).width;
-    if(!p.dead){ ctx.shadowColor=clr; ctx.shadowBlur=6; }
-    ctx.fillStyle=p.dead?"#445566":clr;
-    ctx.fillText(nm, cx+(cw-nmw)/2, cy+16); ctx.shadowBlur=0;
-
-    // Score in header right
-    ctx.font=`6px ${PX}`;
-    const sc=`${p.score}`;
-    const scw=ctx.measureText(sc).width;
-    ctx.fillStyle=p.dead?"#334455":C.amber;
-    ctx.fillText(sc, cx+cw-scw-5, cy+16);
-
-    // Danger pulse overlay
-    const esc2=getEscalation(p.score);
-    if(esc2.danger>=3&&!p.dead){
-      ctx.fillStyle=`rgba(255,20,50,${0.03+0.03*Math.sin(Date.now()*0.008)})`;
-      ctx.fillRect(cx,cy,cw,ch);
-    }
-
-    // Draw the pane content (rows + falling word) inside card below header
-    const ppx = cx;
-    const ppy = cy + HDR_H;
-    const ppw = cw;
-    const pph = ch - HDR_H;
-
-    drawPane(p, ppx, ppy, ppw, pph, false, true);
-
-    // DEAD overlay
-    if(p.dead){
-      ctx.fillStyle="rgba(0,0,0,0.72)";
-      ctx.fillRect(cx, cy, cw, ch);
-      ctx.font=`7px ${PX}`;
-      const dw=ctx.measureText("GAME OVER").width;
-      pxDraw("GAME OVER", cx+(cw-dw)/2, cy+ch/2-4, C.red, 7, true);
-      ctx.font=`6px ${PX}`;
-      const fw2=ctx.measureText(`${p.score} pts`).width;
-      ctx.fillStyle=C.amber;
-      ctx.fillText(`${p.score} pts`, cx+(cw-fw2)/2, cy+ch/2+12);
-    }
-
-    // Combo badge
-    if(p.combo>1&&!p.dead){
-      ctx.font=`6px ${PX}`;
-      const cb=`x${p.combo}`;
-      const cbw=ctx.measureText(cb).width;
-      ctx.fillStyle=p.combo>=5?C.amber:C.green;
-      ctx.shadowColor=p.combo>=5?C.amber:C.green; ctx.shadowBlur=6;
-      ctx.fillText(cb, cx+cw-cbw-5, cy+HDR_H+14); ctx.shadowBlur=0;
-    }
-  });
+  // Draw all 4 panes — force isNarrow=false so they all look identical to 2P
+  for(let i=0;i<4;i++){
+    const px2 = i*(pw+DIVW);
+    drawPane4(players[i], px2, 0, pw, ph, i===localPlayerIdx);
+  }
 
   checkMultiGameOver();
   drawMultiForfeitOverlay();
+}
+
+// drawPane4: identical to drawPane but always treats pane as full-size (no isNarrow logic)
+function drawPane4(p, px, py, pw, ph, isLocal){
+  const headerH=36, inputH=44;
+  const PLAY_H=ph-headerH-inputH;
+  const pTop=py+headerH, pBottom=py+ph-inputH;
+  const nCols=4;
+  const colStep=Math.floor((pw-16)/nCols);
+  const pCols=Array.from({length:nCols},(_,i)=>8+i*colStep);
+  const pRowH=30;
+  const esc=getEscalation(p.score);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px,py,pw,ph); ctx.clip();
+
+  ctx.fillStyle="rgba(3,3,14,0.82)";
+  ctx.fillRect(px,py,pw,ph);
+
+  ctx.strokeStyle=`rgba(${hexRgb(p.color)},0.30)`;
+  ctx.lineWidth=1;
+  ctx.strokeRect(px+1,py+1,pw-2,ph-2);
+
+  if(esc.danger>=3){const pulse=0.04+0.04*Math.sin(Date.now()*0.008);ctx.fillStyle=`rgba(255,20,50,${pulse})`;ctx.fillRect(px,py,pw,ph);}
+  else if(esc.danger>=2){const pulse=0.02+0.02*Math.sin(Date.now()*0.005);ctx.fillStyle=`rgba(255,120,0,${pulse})`;ctx.fillRect(px,py,pw,ph);}
+
+  if(isLocal&&esc.danger>p.lastEscDanger){p.lastEscDanger=esc.danger;p.escFlashTimer=90;p.escFlashLabel=esc.label;sfxCombo();}
+
+  // Physics
+  if(p.falling){
+    p.falling.yRatio=(p.falling.yRatio||0)+p.falling.speed/PLAY_H;
+    const limitRatio=Math.max(0,(PLAY_H-p.rows.length*pRowH)/PLAY_H);
+    if(p.falling.yRatio>=limitRatio){
+      if(isLocal){
+        p.rows.push({text:p.falling.text,col:p.falling.col}); sfxLand();
+        spawnParticles(p.particles,px+pCols[p.falling.col%nCols]+10,pTop+limitRatio*PLAY_H,C.amber,5);
+        p.landingFlash={text:p.falling.text,col:p.falling.col,yRatio:limitRatio,timer:8};
+        const maxRows=Math.max(3,Math.floor((PLAY_H-10)/pRowH));
+        if(p.rows.length>maxRows) p.dead=true;
+        p.falling=p.pendingSpawn||null; p.pendingSpawn=null; p.spawnTimer=0;
+      }
+    }
+  }
+
+  // Rows
+  for(let i=0;i<p.rows.length;i++){
+    const r=p.rows[i],wx=px+pCols[r.col%nCols],wy=pBottom-i*pRowH;
+    const fontSize=10;
+    ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(r.text).width;
+    const dangerRatio=p.rows.length/12;
+    const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
+    ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
+    ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
+    ctx.lineWidth=1; ctx.strokeRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
+    pxDraw(r.text,wx,wy,rowClr,fontSize,true);
+  }
+
+  // Falling word
+  if(p.falling){
+    const fx=px+pCols[p.falling.col%nCols];
+    const fyPx=pTop+(p.falling.yRatio||0)*PLAY_H;
+    p.falling.x=fx; p.falling.y=fyPx;
+    const fontSize=11;
+    ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
+    const len=p.falling.text.length;
+    const wordClr=len<=3?C.green:len<=5?C.teal:len<=8?C.amber:C.red;
+    ctx.fillStyle="rgba(0,180,255,0.10)"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+    ctx.strokeStyle="rgba(0,200,255,0.45)"; ctx.lineWidth=1; ctx.strokeRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+    pxDraw(p.falling.text,fx,fyPx,wordClr,fontSize,true);
+  }
+
+  // Landing flash
+  if(p.landingFlash){
+    if(!p.dead) p.landingFlash.timer--;
+    if(p.landingFlash.timer<=0){p.landingFlash=null;}
+    else{
+      const lf=p.landingFlash,fx=px+pCols[lf.col%nCols],fyPx=pTop+lf.yRatio*PLAY_H;
+      const fontSize=11;
+      ctx.globalAlpha=(lf.timer/8)*0.7; ctx.font=`${fontSize}px ${PX}`;
+      const tw=ctx.measureText(lf.text).width;
+      ctx.fillStyle="#ffffff"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Particles
+  for(let i=p.particles.length-1;i>=0;i--){
+    const pt=p.particles[i]; pt.x+=pt.vx; pt.y+=pt.vy; pt.vy+=0.12; pt.life-=0.04;
+    if(pt.life<=0){p.particles.splice(i,1);continue;}
+    ctx.globalAlpha=pt.life; ctx.fillStyle=pt.color; ctx.fillRect(pt.x,pt.y,pt.size,pt.size);
+  }
+  ctx.globalAlpha=1;
+
+  // Header
+  ctx.fillStyle="rgba(3,3,18,0.94)"; ctx.fillRect(px,py,pw,headerH);
+  ctx.fillStyle=p.color; ctx.fillRect(px,py+headerH-2,pw,2);
+  ctx.font=`7px ${PX}`;
+  const dispName=p.name.length>8?p.name.slice(0,8):p.name;
+  const nw=ctx.measureText(dispName).width;
+  ctx.shadowColor=p.color; ctx.shadowBlur=6; ctx.fillStyle=p.color;
+  ctx.fillText(dispName,px+pw/2-nw/2,py+headerH-6); ctx.shadowBlur=0;
+  pxDraw(`${p.score}`,px+5,py+headerH-6,C.amber,7,false);
+  if(p.combo>1){const cs=`x${p.combo}`;ctx.font=`6px ${PX}`;const cw=ctx.measureText(cs).width;pxDraw(cs,px+pw-cw-5,py+headerH-6,p.combo>=5?C.amber:C.green,6,false);}
+
+  // Active pulse border for local player
+  if(isLocal){
+    const ta=Date.now()*0.006,alpha=0.4+0.35*Math.sin(ta);
+    ctx.strokeStyle=`rgba(${hexRgb(p.color)},${alpha.toFixed(2)})`;
+    ctx.lineWidth=2; ctx.strokeRect(px+1,py+1,pw-2,ph-2);
+  }
+
+  // Input bar
+  ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(px,py+ph-inputH,pw,inputH);
+  ctx.fillStyle=p.color; ctx.fillRect(px,py+ph-inputH,pw,2);
+  if(isLocal&&!p.dead){
+    const cursor=Math.floor(Date.now()/400)%2===0?"_":" ";
+    const display=p.typed+cursor;
+    ctx.font=`9px ${PX}`; const itw=ctx.measureText(display).width;
+    pxDraw(display,px+pw/2-itw/2,py+ph-inputH/2+4,p.color,9,true);
+  } else if(!isLocal){
+    const remTyped=p.typed||"";
+    const dotLabel=remTyped.length>0?remTyped:"●";
+    ctx.font=`7px ${PX}`; const dlw=ctx.measureText(dotLabel).width;
+    ctx.shadowColor=C.green; ctx.shadowBlur=Math.floor(Date.now()/400)%2===0?5:0;
+    ctx.fillStyle=remTyped.length>0?p.color:C.green;
+    ctx.fillText(dotLabel,px+pw/2-dlw/2,py+ph-inputH/2+4); ctx.shadowBlur=0;
+  }
+
+  // Dead overlay
+  if(p.dead){
+    ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(px,py,pw,ph);
+    const dtxt="ELIMINATED";
+    ctx.font=`9px ${PX}`; const dw=ctx.measureText(dtxt).width;
+    pxDraw(dtxt,px+pw/2-dw/2,py+ph/2,C.red,9,true);
+    ctx.font=`7px ${PX}`; const stxt=`${p.score}`;
+    const sw=ctx.measureText(stxt).width;
+    pxDraw(stxt,px+pw/2-sw/2,py+ph/2+16,C.amber,7,false);
+  }
+
+  // Last standing banner
+  if(lastStanding&&lastStanding===p&&!p.dead&&isLocal){
+    const alpha=Math.min(1,(180-lastStandingTimer)/30);
+    ctx.globalAlpha=alpha*(0.7+0.3*Math.sin(Date.now()*0.006));
+    ctx.font=`9px ${PX}`; const bt="★ LAST STANDING ★"; const bw=ctx.measureText(bt).width;
+    ctx.fillStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=12;
+    ctx.fillText(bt,px+pw/2-bw/2,py+headerH+20); ctx.shadowBlur=0; ctx.globalAlpha=1;
+  }
+
+  // Esc flash
+  if(isLocal&&p.escFlashTimer>0){
+    p.escFlashTimer--;
+    const alpha=Math.min(1,p.escFlashTimer/20);
+    const flashClr=esc.danger>=3?"#ff2244":esc.danger>=2?"#ffaa00":p.color;
+    ctx.globalAlpha=alpha; ctx.font=`11px ${PX}`; const fw=ctx.measureText(p.escFlashLabel).width;
+    pxDraw(p.escFlashLabel,px+pw/2-fw/2,py+ph/2,flashClr,11,true); ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
 }
 
 function game2P(){
@@ -1627,6 +1731,15 @@ function menu(){
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
   if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",560,C.dim+"ff",10,false);
   if(username){ctx.font=`8px ${PX}`;pxDraw("HI, "+username.toUpperCase()+"!",14,H-16,C.purple,8,true);}
+  // Toast notification (e.g. host disconnected)
+  if(joinErrorMsg){
+    const toastW=360,toastH=36,toastX=W/2-toastW/2,toastY=H-60;
+    ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(toastX,toastY,toastW,toastH);
+    ctx.strokeStyle=C.red; ctx.lineWidth=2; ctx.strokeRect(toastX,toastY,toastW,toastH);
+    ctx.font=`8px ${PX}`; const tw=ctx.measureText(joinErrorMsg).width;
+    ctx.shadowColor=C.red; ctx.shadowBlur=8; ctx.fillStyle=C.red;
+    ctx.fillText(joinErrorMsg,W/2-tw/2,toastY+toastH/2+4); ctx.shadowBlur=0;
+  }
 }
 function difficultyMenu(){centered("SELECT DIFFICULTY",110,C.purple,16,true);diffButtons.forEach((b,i)=>pixelBox(b,diffColors[i]||C.teal));}
 function multiMenu(){centered("MULTIPLAYER MODE",110,C.teal,16,true);multiButtons.forEach((b,i)=>pixelBox(b,multiColors[i]));}
@@ -1662,10 +1775,21 @@ function lobbyWait(){
   ctx.fillStyle="#070720"; ctx.fillRect(80,124,440,52); ctx.strokeStyle=C.green; ctx.lineWidth=2; ctx.strokeRect(80,124,440,52);
   pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",165,C.green,18,true);
   // Player panels
-  const guestList=Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name||id,ready:p.ready||false,isMe:false}));
-  let allPeers;
-  if(lobby.role==="host") allPeers=[{id:myPlayerId,name:username?username.toUpperCase():"HOST",ready:myReady,isMe:true},...guestList];
-  else allPeers=[{id:"host",name:(lobby.hostName||"HOST").toUpperCase(),ready:lobby.hostReady||false,isMe:false},{id:myPlayerId,name:username?username.toUpperCase():"ME",ready:myReady,isMe:true},...guestList];
+  // Build ordered player list using joinOrder for stable slot positions
+  // Each slot in joinOrder is either: me, a connected peer, or empty (WAITING)
+  const effectiveOrder = joinOrder.length>0 ? joinOrder : [
+    lobby.role==="host"?myPlayerId:(lobby.hostPeerId||"__host__"),
+    ...(lobby.role==="host"?Object.keys(lobbyPeers):[myPlayerId,...Object.keys(lobbyPeers)])
+  ];
+  const allPeers = Array.from({length:lobby.required}, (_,i)=>{
+    const pid = effectiveOrder[i];
+    if(!pid) return null; // empty slot
+    if(pid===myPlayerId) return {id:myPlayerId, name:username?username.toUpperCase():"ME", ready:myReady, isMe:true, isHost:lobby.role==="host"||pid===lobby.hostPeerId};
+    if(lobby.role==="join" && pid===lobby.hostPeerId) return {id:pid, name:(lobby.hostName||"HOST").toUpperCase(), ready:lobby.hostReady||false, isMe:false, isHost:true};
+    const peer=lobbyPeers[pid];
+    if(peer) return {id:pid, name:(peer.name||pid).toUpperCase(), ready:peer.ready||false, isMe:false, isHost:pid===lobby.hostPeerId};
+    return null; // slot was occupied but player left → show WAITING
+  });
   const maxShow=lobby.required,panelW=240,panelH=100,panelGap=10;
   const totalW=Math.min(maxShow,2)*(panelW+panelGap)-panelGap,startX=(W-totalW)/2;
   for(let i=0;i<maxShow;i++){
@@ -1679,7 +1803,7 @@ function lobbyWait(){
     ctx.fillRect(px2,py2,cs,2);ctx.fillRect(px2,py2,2,cs);ctx.fillRect(px2+panelW-cs,py2,cs,2);ctx.fillRect(px2+panelW-2,py2,2,cs);
     ctx.fillRect(px2,py2+panelH-2,cs,2);ctx.fillRect(px2,py2+panelH-cs,2,cs);ctx.fillRect(px2+panelW-cs,py2+panelH-2,cs,2);ctx.fillRect(px2+panelW-2,py2+panelH-cs,2,cs);
     ctx.fillStyle=`rgba(${hexRgb(clr)},0.15)`; ctx.fillRect(px2,py2,panelW,24);
-    ctx.font=`7px ${PX}`; const plabel=`P${i+1}${p&&p.isMe?" (YOU)":""}`;
+    ctx.font=`7px ${PX}`; const plabel=`P${i+1}${p&&p.isMe?" (YOU)":""}${p&&p.isHost?" ★HOST":""}`;
     const plw=ctx.measureText(plabel).width; ctx.fillStyle=clr; ctx.fillText(plabel,px2+(panelW-plw)/2,py2+16);
     if(joined){
       ctx.font=`9px ${PX}`; const nw=ctx.measureText(p.name).width;
