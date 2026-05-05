@@ -405,8 +405,18 @@ async function hostGame(){
   lobby.code=generateCode(); lobby.players=1; lobby.role="host";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
   state="lobby_wait";
-  if(myPeer) myPeer.destroy();
-  myPeer=new Peer("wArena-"+lobby.code);
+  if(myPeer){ try{myPeer.destroy();}catch(e){} }
+
+  myPeer=new Peer("wArena-"+lobby.code, {
+    config:{
+      iceServers:[
+        {urls:"stun:stun.l.google.com:19302"},
+        {urls:"stun:stun1.l.google.com:19302"},
+        {urls:"stun:global.stun.twilio.com:3478"},
+      ]
+    }
+  });
+
   myPeer.on("open",()=>{
     myPeer.on("connection",(conn)=>{
       conn.on("open",()=>{
@@ -415,23 +425,27 @@ async function hostGame(){
           if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
-        // Send welcome with current peer list
         conn.send({type:"welcome",from:myPlayerId,name:username||"HOST",
           hostReady:myReady,hostPeerId:myPlayerId,
           peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
       });
       conn.on("close",()=>{
         guestConns=guestConns.filter(c=>c!==conn);
-        if(conn._peerId) { delete lobbyPeers[conn._peerId]; delete remoteStates[conn._peerId]; }
+        if(conn._peerId){ delete lobbyPeers[conn._peerId]; delete remoteStates[conn._peerId]; }
         lobby.players=Object.keys(lobbyPeers).length+1;
         lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
         broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
           hostPeerId:myPlayerId,peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
         if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
       });
+      conn.on("error",(e)=>console.warn("Guest conn error:",e));
     });
   });
-  myPeer.on("error",(e)=>console.warn("Host error:",e));
+  myPeer.on("error",(e)=>{
+    console.warn("Host peer error:",e);
+    // Show error in lobby if still waiting
+    if(state==="lobby_wait") joinErrorMsg="HOST ERROR - TRY AGAIN";
+  });
 }
 
 function joinGame(){joinInput="";joinErrorMsg="";joinConnecting=false;state="joingame";}
@@ -441,23 +455,63 @@ async function submitJoinCode(){
   if(val.length<3){joinErrorMsg="ENTER A CODE!";sfxMiss();return;}
   joinConnecting=true; joinErrorMsg=""; lobby.code=val; lobby.role="join";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
-  if(myPeer) myPeer.destroy();
-  myPeer=new Peer();
+  if(myPeer){ try{myPeer.destroy();}catch(e){} }
+
+  // Use public STUN servers to improve WebRTC connection success rate
+  myPeer=new Peer({
+    config:{
+      iceServers:[
+        {urls:"stun:stun.l.google.com:19302"},
+        {urls:"stun:stun1.l.google.com:19302"},
+        {urls:"stun:global.stun.twilio.com:3478"},
+      ]
+    }
+  });
+
+  const joinTimer = setTimeout(()=>{
+    if(joinConnecting){
+      joinConnecting=false;
+      joinErrorMsg="TIMEOUT — CHECK CODE & TRY AGAIN";
+      sfxMiss();
+    }
+  }, 15000); // extended to 15s
+
   myPeer.on("open",()=>{
-    hostConn=myPeer.connect("wArena-"+val,{reliable:true});
+    hostConn=myPeer.connect("wArena-"+val,{reliable:true,serialization:"json"});
+
     hostConn.on("open",()=>{
+      clearTimeout(joinTimer);
       joinConnecting=false; joinErrorMsg=""; state="lobby_wait";
       hostConn.send({type:"join",from:myPlayerId,name:username||"P?"});
       hostConn.on("data",(data)=>{
         if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
         else onLobbyMsg(data, hostConn);
       });
+      hostConn.on("close",()=>{
+        if(state==="lobby_wait"||state==="game"){
+          joinErrorMsg="HOST DISCONNECTED";
+          if(state==="game"){ state="gameover_multi"; stopBGM(); }
+          else { state="joingame"; }
+        }
+      });
     });
-    hostConn.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
-    hostConn.on("close",()=>{joinConnecting=false;joinErrorMsg="HOST DISCONNECTED";});
+
+    hostConn.on("error",(err)=>{
+      clearTimeout(joinTimer);
+      joinConnecting=false;
+      joinErrorMsg="CANNOT CONNECT!";
+      sfxMiss();
+      console.warn("hostConn error:",err);
+    });
   });
-  myPeer.on("error",()=>{joinConnecting=false;joinErrorMsg="CANNOT CONNECT!";sfxMiss();});
-  setTimeout(()=>{if(joinConnecting){joinConnecting=false;joinErrorMsg="TIMEOUT";sfxMiss();}},8000);
+
+  myPeer.on("error",(err)=>{
+    clearTimeout(joinTimer);
+    joinConnecting=false;
+    joinErrorMsg="PEER ERROR — TRY AGAIN";
+    sfxMiss();
+    console.warn("Peer error:",err);
+  });
 }
 
 function onLobbyMsg(data, fromConn){
