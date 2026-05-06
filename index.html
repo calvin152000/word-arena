@@ -1489,8 +1489,8 @@ function game4P(){
   const opponents = [0,1,2,3].filter(i=>i!==localPlayerIdx);
 
   // ── Layout ────────────────────────────────────────────────────────────────
-  // Main pane: left 58%. Right column: 42% split into 3 equal opponent frames.
-  const MAIN_W  = Math.round(W * 0.58);   // main pane pixel width
+  // Main pane: left 65%. Right column: 35% split into 3 equal opponent frames.
+  const MAIN_W  = Math.round(W * 0.65);   // main pane pixel width
   const DIVW    = 4;                       // divider bar
   const RX      = MAIN_W + DIVW;          // right column start x
   const RW      = W - RX;                 // right column total width
