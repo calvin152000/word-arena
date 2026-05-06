@@ -422,6 +422,8 @@ async function hostGame(){
       conn.on("open",()=>{
         guestConns.push(conn);
         conn.on("data",(data)=>{
+          // Assign _peerId as soon as we receive the join message
+          if(data.type==="join"&&data.from){ conn._peerId=data.from; }
           if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
@@ -431,7 +433,13 @@ async function hostGame(){
       });
       conn.on("close",()=>{
         guestConns=guestConns.filter(c=>c!==conn);
-        if(conn._peerId){ delete lobbyPeers[conn._peerId]; delete remoteStates[conn._peerId]; }
+        // Find the peerId either from _peerId tag or by searching lobbyPeers for matching conn
+        const disconnectedId = conn._peerId ||
+          Object.keys(lobbyPeers).find(id=>lobbyPeers[id].conn===conn);
+        if(disconnectedId){
+          delete lobbyPeers[disconnectedId];
+          delete remoteStates[disconnectedId];
+        }
         lobby.players=Object.keys(lobbyPeers).length+1;
         lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
         broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
@@ -593,36 +601,6 @@ function onLobbyMsg(data, fromConn){
     if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; delete remoteStates[id]; });
     returnToLobby();
 
-  } else if(type==="newhost"){
-    // New host is announcing themselves with a new room code
-    const {newHostId, newCode} = data;
-    lobby.code       = newCode;
-    lobby.hostPeerId = newHostId;
-    lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
-    lobby.role       = "join";
-    myReady          = false;
-    joinErrorMsg     = "";
-    sfxPlayerJoin();
-
-    // Reconnect to new host
-    if(hostConn){ try{hostConn.close();}catch(e){} hostConn=null; }
-    if(myPeer && myPeer.open){
-      hostConn = myPeer.connect("wArena-"+newCode, {reliable:true});
-      hostConn.on("open", ()=>{
-        hostConn.send({type:"join", from:myPlayerId, name:username||"P?"});
-        hostConn.on("data", (data2)=>{
-          if(data2.type==="gamestate"||data2.type==="wordcleared") onGameMsg(data2, hostConn);
-          else onLobbyMsg(data2, hostConn);
-        });
-        hostConn.on("close", ()=>{ attemptHostMigration(); });
-        state = "lobby_wait";
-      });
-      hostConn.on("error", ()=>{
-        joinErrorMsg = "RECONNECT FAILED";
-        sfxMiss();
-      });
-    }
-
   } else if(type==="leave"){
     delete lobbyPeers[from]; delete remoteStates[from];
     lobby.players=lobby.role==="host"?Object.keys(lobbyPeers).length+1:Object.keys(lobbyPeers).length+2;
@@ -715,53 +693,89 @@ function leaveLobbyChannel(){
 }
 
 // ── HOST MIGRATION ────────────────────────────────────────────────────────────
-// When host disconnects, all guests independently elect the same new host
-// by picking the lexicographically smallest peerId. The winner becomes host,
-// generates a new room code, and accepts reconnections from other guests.
+// Strategy: deterministic election by sorted peerId.
+// Winner opens a new Peer on a KNOWN code = "wArena-" + newHostId (first 6 chars).
+// All remaining guests simply connect to that known address — no message needed.
 function attemptHostMigration(){
-  // Remove old host from lobbyPeers
   if(lobby.hostPeerId) delete lobbyPeers[lobby.hostPeerId];
   lobby.players = Object.keys(lobbyPeers).length + 1;
 
-  // Deterministic election: smallest peerId wins
   const allIds    = [myPlayerId, ...Object.keys(lobbyPeers)].sort();
   const newHostId = allIds[0];
 
+  // Derive a deterministic new room code from the new host's peerId
+  const newCode = newHostId.slice(0,6).toUpperCase();
+
   if(newHostId === myPlayerId){
-    becomeHost();
+    becomeHost(newCode);
   } else {
-    // I'm a guest — wait for the new host to broadcast a new code
-    lobby.role   = "join";
-    hostConn     = null;
+    // I'm a guest — connect directly to the new host's known address
+    lobby.role       = "join";
+    hostConn         = null;
     lobby.hostPeerId = newHostId;
     lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
     lobby.hostReady  = false;
-    myReady = false;
-    sfxPlayerJoin();
-    // The new host will send a "newhost" message with the new room code
-    // We display a waiting message in the meantime
-    joinErrorMsg = "HOST LEFT — RECONNECTING...";
-    setTimeout(()=>{ if(joinErrorMsg==="HOST LEFT — RECONNECTING...") joinErrorMsg=""; }, 5000);
+    lobby.code       = newCode;
+    myReady          = false;
+    joinErrorMsg     = "HOST LEFT — RECONNECTING...";
+    sfxMiss();
+
+    // Retry connecting to the new host with backoff — they need a moment to open
+    let retries = 0;
+    function tryConnect(){
+      if(lobby.hostPeerId !== newHostId) return; // situation changed, abort
+      if(!myPeer || !myPeer.open){
+        if(retries++ < 10){ setTimeout(tryConnect, 600); }
+        else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
+        return;
+      }
+      if(hostConn){ try{hostConn.close();}catch(e){} hostConn=null; }
+      hostConn = myPeer.connect("wArena-"+newCode, {reliable:true, serialization:"json"});
+      const connTimeout = setTimeout(()=>{
+        if(hostConn && !hostConn.open){
+          try{hostConn.close();}catch(e){} hostConn=null;
+          if(retries++ < 8){ setTimeout(tryConnect, 800); }
+          else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
+        }
+      }, 3000);
+      hostConn.on("open", ()=>{
+        clearTimeout(connTimeout);
+        joinErrorMsg = "";
+        hostConn.send({type:"join", from:myPlayerId, name:username||"P?"});
+        hostConn.on("data", (data)=>{
+          if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
+          else onLobbyMsg(data, hostConn);
+        });
+        hostConn.on("close", ()=>{ if(state==="lobby_wait"||state==="game") attemptHostMigration(); });
+        state = "lobby_wait";
+        sfxPlayerJoin();
+      });
+      hostConn.on("error", ()=>{
+        clearTimeout(connTimeout);
+        hostConn = null;
+        if(retries++ < 8){ setTimeout(tryConnect, 800); }
+        else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
+      });
+    }
+    setTimeout(tryConnect, 400); // small delay so new host opens first
   }
 }
 
-function becomeHost(){
+function becomeHost(newCode){
+  if(!newCode) newCode = myPlayerId.slice(0,6).toUpperCase();
   lobby.role       = "host";
   lobby.hostPeerId = myPlayerId;
   lobby.hostName   = username ? username.toUpperCase() : "HOST";
+  lobby.code       = newCode;
   hostConn         = null;
   guestConns       = [];
   myReady          = false;
   lobbyReadyCount  = 0;
+  joinErrorMsg     = "";
 
-  // Reset ready flags of remaining guests
   Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
 
-  // Generate a new room code and open a new Peer
-  const newCode = generateCode();
-  lobby.code    = newCode;
-
-  if(myPeer){ try{myPeer.destroy();}catch(e){} }
+  if(myPeer){ try{myPeer.destroy();}catch(e){} myPeer=null; }
 
   myPeer = new Peer("wArena-"+newCode, {
     config:{ iceServers:[
@@ -772,53 +786,52 @@ function becomeHost(){
   });
 
   myPeer.on("open", ()=>{
-    // Broadcast new code to all known guests via direct peer connection
-    // (guests know to look for "wArena-<newHostId>" initially but we send new code)
-    // Accept reconnections from guests
     myPeer.on("connection", (conn)=>{
       conn.on("open", ()=>{
         guestConns.push(conn);
         conn.on("data", (data)=>{
+          if(data.type==="join"&&data.from){ conn._peerId=data.from; }
           if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
         conn.on("close", ()=>{
           guestConns = guestConns.filter(c=>c!==conn);
-          if(conn._peerId){ delete lobbyPeers[conn._peerId]; }
+          const disconnectedId = conn._peerId ||
+            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]?.conn===conn);
+          if(disconnectedId){
+            delete lobbyPeers[disconnectedId];
+            delete remoteStates[disconnectedId];
+          }
           lobby.players = Object.keys(lobbyPeers).length + 1;
           lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+          broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
+            hostPeerId:myPlayerId,
+            peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
+          if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
         });
-        // Send welcome with migrated flag and new code
+        conn.on("error", (e)=>console.warn("Guest conn error:",e));
+        // Send welcome with migrated=true so guests know to reset ready state
         conn.send({
           type:"welcome", from:myPlayerId, name:username||"HOST",
-          hostReady:myReady, hostPeerId:myPlayerId,
+          hostReady:false, hostPeerId:myPlayerId,
           migrated:true, newCode,
-          peers:Object.entries(lobbyPeers)
-                      .map(([id,p])=>({id,name:p.name,ready:false}))
+          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:false}))
         });
+        // Update our own lobby state once guest reconnects
+        lobbyPeers[conn._peerId||""] = lobbyPeers[conn._peerId||""] ||
+          {name:"P?", ready:false, conn};
       });
     });
 
-    // Notify guests of new code via a separate peer they can connect to
-    // by announcing on the old peer ID pattern
     sfxLobbyReady();
     state = "lobby_wait";
-
-    // Broadcast "newhost" message to all guests using their known peer IDs
-    // Each guest will connect to wArena-<newCode>
-    Object.keys(lobbyPeers).forEach(guestId=>{
-      try{
-        const tempConn = myPeer.connect(guestId, {reliable:true});
-        tempConn.on("open", ()=>{
-          tempConn.send({type:"newhost", newHostId:myPlayerId, newCode, from:myPlayerId});
-          // Don't add to guestConns — they'll reconnect to us
-          setTimeout(()=>{ try{tempConn.close();}catch(e){} }, 2000);
-        });
-      }catch(e){}
-    });
+    console.log("Became new host with code:", newCode);
   });
 
-  myPeer.on("error", (e)=>console.warn("New host peer error:", e));
+  myPeer.on("error", (e)=>{
+    console.warn("New host peer error:", e);
+    joinErrorMsg = "HOST ERROR — TRY AGAIN";
+  });
 }
 
 
