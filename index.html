@@ -418,6 +418,7 @@ async function hostGame(){
   });
 
   myPeer.on("open",()=>{
+    startLobbyHeartbeat();
     myPeer.on("connection",(conn)=>{
       conn.on("open",()=>{
         guestConns.push(conn);
@@ -602,10 +603,22 @@ function onLobbyMsg(data, fromConn){
     returnToLobby();
 
   } else if(type==="leave"){
-    delete lobbyPeers[from]; delete remoteStates[from];
-    lobby.players=lobby.role==="host"?Object.keys(lobbyPeers).length+1:Object.keys(lobbyPeers).length+2;
-    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
-    if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
+    if(lobby.role==="host"){
+      // Host is authoritative: delete leaver then broadcast full updated peers list
+      delete lobbyPeers[from]; delete remoteStates[from];
+      lobby.players=Object.keys(lobbyPeers).length+1;
+      lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+      broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
+        hostPeerId:myPlayerId,
+        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
+      if(countdownActive){countdownActive=false;countdownValue=3;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
+    } else {
+      // Guest: apply directly (host's broadcast via type:"joined" should follow anyway)
+      delete lobbyPeers[from]; delete remoteStates[from];
+      lobby.players=Object.keys(lobbyPeers).length+2;
+      lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
+      if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
+    }
   }
 }
 
@@ -682,8 +695,26 @@ function sendToHost(data){if(hostConn){try{hostConn.send(data);}catch(e){} }}
 function sendLobby(data){if(lobby.role==="host") broadcastLobby(data); else sendToHost(data);}
 function isOnlineConnected(){return myPeer&&myPeer.open;}
 
+// ── LOBBY HEARTBEAT ───────────────────────────────────────────────────────────
+// Host re-broadcasts authoritative peers list every 2s while in lobby_wait.
+// This ensures any lagged guest always catches up to the correct state.
+let lobbyHeartbeatTimer = null;
+function startLobbyHeartbeat(){
+  stopLobbyHeartbeat();
+  lobbyHeartbeatTimer = setInterval(()=>{
+    if(state!=="lobby_wait" || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
+    broadcastLobby({
+      type:"joined", from:"__heartbeat__", name:"", total:lobby.players,
+      hostPeerId:myPlayerId,
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+    });
+  }, 2000);
+}
+function stopLobbyHeartbeat(){ if(lobbyHeartbeatTimer){clearInterval(lobbyHeartbeatTimer);lobbyHeartbeatTimer=null;} }
+
 function leaveLobbyChannel(){
   sendLobby({type:"leave",from:myPlayerId});
+  stopLobbyHeartbeat();
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3; myReady=false; lobbyReadyCount=0;
   if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
@@ -824,6 +855,7 @@ function becomeHost(newCode){
     });
 
     sfxLobbyReady();
+    startLobbyHeartbeat();
     state = "lobby_wait";
     console.log("Became new host with code:", newCode);
   });
