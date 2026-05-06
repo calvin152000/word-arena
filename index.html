@@ -428,26 +428,27 @@ async function hostGame(){
           if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
+        conn.on("close",()=>{
+          guestConns=guestConns.filter(c=>c!==conn);
+          // Find the peerId either from _peerId tag or by searching lobbyPeers for matching conn
+          const disconnectedId = conn._peerId ||
+            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]&&lobbyPeers[id].conn===conn);
+          if(disconnectedId){
+            delete lobbyPeers[disconnectedId];
+            delete remoteStates[disconnectedId];
+          }
+          lobby.players=Object.keys(lobbyPeers).length+1;
+          lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+          broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
+            hostPeerId:myPlayerId,peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
+          if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
+        });
+        conn.on("error",(e)=>console.warn("Guest conn error:",e));
+        // Send welcome AFTER attaching all handlers
         conn.send({type:"welcome",from:myPlayerId,name:username||"HOST",
           hostReady:myReady,hostPeerId:myPlayerId,
           peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
       });
-      conn.on("close",()=>{
-        guestConns=guestConns.filter(c=>c!==conn);
-        // Find the peerId either from _peerId tag or by searching lobbyPeers for matching conn
-        const disconnectedId = conn._peerId ||
-          Object.keys(lobbyPeers).find(id=>lobbyPeers[id].conn===conn);
-        if(disconnectedId){
-          delete lobbyPeers[disconnectedId];
-          delete remoteStates[disconnectedId];
-        }
-        lobby.players=Object.keys(lobbyPeers).length+1;
-        lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
-        broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
-          hostPeerId:myPlayerId,peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-        if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
-      });
-      conn.on("error",(e)=>console.warn("Guest conn error:",e));
     });
   });
   myPeer.on("error",(e)=>{
@@ -550,14 +551,16 @@ function onLobbyMsg(data, fromConn){
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
   } else if(type==="joined"){
     const isDisc=(from==="__disconnect__");
+    const isHeartbeat=(from==="__heartbeat__");
     if(data.peers){
       Object.keys(lobbyPeers).forEach(id=>{if(!data.peers.find(p=>p.id===id)&&id!==myPlayerId) delete lobbyPeers[id];});
       data.peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
-    } else if(!isDisc&&!lobbyPeers[from]) lobbyPeers[from]={name:name||from,ready:false};
+    } else if(!isDisc&&!isHeartbeat&&!lobbyPeers[from]) lobbyPeers[from]={name:name||from,ready:false};
     if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
     lobby.players=data.total||Object.keys(lobbyPeers).length+1;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
-    if(!isDisc) sfxPlayerJoin(); else sfxMiss();
+    if(!isDisc&&!isHeartbeat) sfxPlayerJoin();
+    else if(isDisc) sfxMiss();
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready=data.isReady;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
@@ -713,14 +716,21 @@ function startLobbyHeartbeat(){
 function stopLobbyHeartbeat(){ if(lobbyHeartbeatTimer){clearInterval(lobbyHeartbeatTimer);lobbyHeartbeatTimer=null;} }
 
 function leaveLobbyChannel(){
-  sendLobby({type:"leave",from:myPlayerId});
+  // Send leave message FIRST, then close connections after a short delay
+  // so the host has time to receive & relay the leave before connection drops
+  try { sendLobby({type:"leave",from:myPlayerId}); } catch(e){}
   stopLobbyHeartbeat();
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3; myReady=false; lobbyReadyCount=0;
-  if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
-  guestConns.forEach(c=>{try{c.close();}catch(e){} }); guestConns=[];
-  if(myPeer){try{myPeer.destroy();}catch(e){} myPeer=null;}
-  lobbyPeers={}; remoteStates={};
+
+  const doClose=()=>{
+    if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
+    guestConns.forEach(c=>{try{c.close();}catch(e){} }); guestConns=[];
+    if(myPeer){try{myPeer.destroy();}catch(e){} myPeer=null;}
+    lobbyPeers={}; remoteStates={};
+  };
+  // Give 400ms for the leave message to be delivered before tearing down
+  setTimeout(doClose, 400);
 }
 
 // ── HOST MIGRATION ────────────────────────────────────────────────────────────
