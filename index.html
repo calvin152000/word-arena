@@ -377,11 +377,11 @@ const multiButtons=[button("2 PLAYER",150,220,300,60),button("4 PLAYER",150,310,
 const hostJoinButtons=[button("HOST GAME",180,250,240,60),button("JOIN GAME",180,340,240,60),button("BACK",180,430,240,60)];
 
 // ── NETWORK ───────────────────────────────────────────────────────────────────
-// Architecture: HOST is the central relay for all 4 players.
-// Every guest sends their own gamestate to host.
-// Host forwards each guest's state to all OTHER guests.
-// Host also broadcasts its own state to all guests.
-// Result: every player has all 4 states at all times.
+// Architecture (same for 2P and 4P):
+//   HOST opens Peer at "wArena-<code>". Guests connect to it.
+//   Every message goes through host (hub-and-spoke).
+//   If host leaves: remaining guests elect new host by sorted peerId (lowest wins).
+//   New host reopens on the SAME room code so other guests can reconnect seamlessly.
 
 let myPeer=null, hostConn=null, guestConns=[];
 let myPlayerId=Math.random().toString(36).slice(2,8).toUpperCase();
@@ -391,181 +391,264 @@ let leaveLobbyConfirm=false,myReady=false,lobbyReadyCount=0;
 let countdownActive=false,countdownValue=3,countdownInterval=null;
 let joinInput="",joinErrorMsg="",joinConnecting=false;
 let isOnlineGame=false, localPlayerIdx=0, gameSessionId=0;
-
-// Per-player network state (indexed 0-3 by join order)
-// localPlayerIdx = my slot. Others are remote.
-let remoteStates = {}; // peerId → { score, combo, dead, rows, falling, typed }
-
+let remoteStates = {};
 const SEND_INTERVAL_MS = 50;
 let lastSendTime = 0;
 
 function generateCode(){return Math.random().toString(36).substring(2,7).toUpperCase();}
 
-async function hostGame(){
-  lobby.code=generateCode(); lobby.players=1; lobby.role="host";
-  lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
-  state="lobby_wait";
-  if(myPeer){ try{myPeer.destroy();}catch(e){} }
+// ── SHARED HOST SETUP ─────────────────────────────────────────────────────────
+// Used by both hostGame() and becomeHost() — opens a Peer and wires up all handlers.
+function openHostPeer(code){
+  if(myPeer){ try{myPeer.destroy();}catch(e){} myPeer=null; }
 
-  myPeer=new Peer("wArena-"+lobby.code, {
-    config:{
-      iceServers:[
-        {urls:"stun:stun.l.google.com:19302"},
-        {urls:"stun:stun1.l.google.com:19302"},
-        {urls:"stun:global.stun.twilio.com:3478"},
-      ]
-    }
+  myPeer = new Peer("wArena-"+code, {
+    config:{ iceServers:[
+      {urls:"stun:stun.l.google.com:19302"},
+      {urls:"stun:stun1.l.google.com:19302"},
+      {urls:"stun:global.stun.twilio.com:3478"},
+    ]}
   });
 
-  myPeer.on("open",()=>{
+  myPeer.on("open", ()=>{
     startLobbyHeartbeat();
-    myPeer.on("connection",(conn)=>{
-      conn.on("open",()=>{
+    myPeer.on("connection", (conn)=>{
+      conn.on("open", ()=>{
         guestConns.push(conn);
-        conn.on("data",(data)=>{
-          // Assign _peerId as soon as we receive the join message
+        conn.on("data", (data)=>{
           if(data.type==="join"&&data.from){ conn._peerId=data.from; }
           if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
           else onLobbyMsg(data, conn);
         });
-        conn.on("close",()=>{
-          guestConns=guestConns.filter(c=>c!==conn);
-          // Find the peerId either from _peerId tag or by searching lobbyPeers for matching conn
+        conn.on("close", ()=>{
+          guestConns = guestConns.filter(c=>c!==conn);
           const disconnectedId = conn._peerId ||
-            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]&&lobbyPeers[id].conn===conn);
+            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]?.conn===conn);
           if(disconnectedId){
             delete lobbyPeers[disconnectedId];
             delete remoteStates[disconnectedId];
           }
-          lobby.players=Object.keys(lobbyPeers).length+1;
-          lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
-          broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
-            hostPeerId:myPlayerId,peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-          if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
+          lobby.players = Object.keys(lobbyPeers).length+1;
+          lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+          // Broadcast authoritative peers list to all remaining guests
+          broadcastLobby({
+            type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+            peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+          });
+          if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}broadcastLobby({type:"countdown_cancel"});sfxMiss();}
+          sfxMiss();
         });
-        conn.on("error",(e)=>console.warn("Guest conn error:",e));
-        // Send welcome AFTER attaching all handlers
-        conn.send({type:"welcome",from:myPlayerId,name:username||"HOST",
-          hostReady:myReady,hostPeerId:myPlayerId,
-          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+        conn.on("error", (e)=>console.warn("Guest conn error:",e));
+        // Welcome: tell this guest who's here
+        conn.send({
+          type:"welcome", from:myPlayerId, name:username||"HOST",
+          hostReady:myReady, hostPeerId:myPlayerId, code,
+          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
+        });
       });
     });
   });
-  myPeer.on("error",(e)=>{
-    console.warn("Host peer error:",e);
-    // Show error in lobby if still waiting
-    if(state==="lobby_wait") joinErrorMsg="HOST ERROR - TRY AGAIN";
+
+  myPeer.on("error", (e)=>{
+    console.warn("Host peer error:", e);
+    if(state==="lobby_wait") joinErrorMsg="HOST ERROR — TRY AGAIN";
   });
 }
 
+// ── HOST GAME ─────────────────────────────────────────────────────────────────
+async function hostGame(){
+  const code = generateCode();
+  lobby.code=code; lobby.players=1; lobby.role="host";
+  lobby.hostPeerId=myPlayerId; lobby.hostName=username?username.toUpperCase():"HOST";
+  lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
+  state="lobby_wait";
+  openHostPeer(code);
+}
+
+// ── JOIN GAME ─────────────────────────────────────────────────────────────────
 function joinGame(){joinInput="";joinErrorMsg="";joinConnecting=false;state="joingame";}
+
+function openGuestPeer(code, isMigration){
+  // Guest connects to host at wArena-<code>
+  joinConnecting = !isMigration;
+  joinErrorMsg = isMigration ? "RECONNECTING..." : "";
+
+  if(myPeer && myPeer.open){
+    _doGuestConnect(code, isMigration, 0);
+  } else {
+    if(myPeer){ try{myPeer.destroy();}catch(e){} myPeer=null; }
+    myPeer = new Peer({
+      config:{ iceServers:[
+        {urls:"stun:stun.l.google.com:19302"},
+        {urls:"stun:stun1.l.google.com:19302"},
+        {urls:"stun:global.stun.twilio.com:3478"},
+      ]}
+    });
+    myPeer.on("open", ()=> _doGuestConnect(code, isMigration, 0));
+    myPeer.on("error", (err)=>{
+      joinConnecting=false;
+      joinErrorMsg = isMigration ? "RECONNECT FAILED" : "PEER ERROR — TRY AGAIN";
+      sfxMiss();
+    });
+  }
+}
+
+function _doGuestConnect(code, isMigration, retries){
+  if(hostConn){ try{hostConn.close();}catch(e){} hostConn=null; }
+
+  const conn = myPeer.connect("wArena-"+code, {reliable:true, serialization:"json"});
+  hostConn = conn;
+
+  const timeout = setTimeout(()=>{
+    if(!conn.open){
+      conn.close();
+      if(retries < 8){
+        setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 800);
+      } else {
+        hostConn=null; joinConnecting=false;
+        joinErrorMsg = isMigration ? "RECONNECT FAILED — HOST GONE" : "TIMEOUT — CHECK CODE & TRY AGAIN";
+        sfxMiss();
+      }
+    }
+  }, 4000);
+
+  conn.on("open", ()=>{
+    clearTimeout(timeout);
+    joinConnecting=false; joinErrorMsg="";
+    conn.send({type:"join", from:myPlayerId, name:username||"P?"});
+    conn.on("data", (data)=>{
+      if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
+      else onLobbyMsg(data, conn);
+    });
+    conn.on("close", ()=>{
+      if(state==="lobby_wait"||state==="game") attemptHostMigration();
+    });
+    if(!isMigration) state="lobby_wait";
+    sfxPlayerJoin();
+  });
+
+  conn.on("error", ()=>{
+    clearTimeout(timeout);
+    hostConn=null;
+    if(retries < 8){
+      setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 800);
+    } else {
+      joinConnecting=false;
+      joinErrorMsg = isMigration ? "RECONNECT FAILED" : "CANNOT CONNECT!";
+      sfxMiss();
+    }
+  });
+}
 
 async function submitJoinCode(){
   const val=joinInput.toUpperCase().trim();
   if(val.length<3){joinErrorMsg="ENTER A CODE!";sfxMiss();return;}
-  joinConnecting=true; joinErrorMsg=""; lobby.code=val; lobby.role="join";
+  lobby.code=val; lobby.role="join";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
-  if(myPeer){ try{myPeer.destroy();}catch(e){} }
+  openGuestPeer(val, false);
+}
 
-  // Use public STUN servers to improve WebRTC connection success rate
-  myPeer=new Peer({
-    config:{
-      iceServers:[
-        {urls:"stun:stun.l.google.com:19302"},
-        {urls:"stun:stun1.l.google.com:19302"},
-        {urls:"stun:global.stun.twilio.com:3478"},
-      ]
-    }
-  });
+// ── HOST MIGRATION ────────────────────────────────────────────────────────────
+// When the host disconnects, all remaining guests independently elect the same
+// new host (lexicographically smallest peerId). The new host reopens on the
+// SAME room code so everyone else can reconnect without any extra signalling.
+function attemptHostMigration(){
+  if(lobby.hostPeerId) delete lobbyPeers[lobby.hostPeerId];
 
-  const joinTimer = setTimeout(()=>{
-    if(joinConnecting){
-      joinConnecting=false;
-      joinErrorMsg="TIMEOUT — CHECK CODE & TRY AGAIN";
-      sfxMiss();
-    }
-  }, 15000); // extended to 15s
+  const allIds    = [myPlayerId, ...Object.keys(lobbyPeers)].sort();
+  const newHostId = allIds[0];
+  const code      = lobby.code; // reuse same code!
 
-  myPeer.on("open",()=>{
-    hostConn=myPeer.connect("wArena-"+val,{reliable:true,serialization:"json"});
-
-    hostConn.on("open",()=>{
-      clearTimeout(joinTimer);
-      joinConnecting=false; joinErrorMsg=""; state="lobby_wait";
-      hostConn.send({type:"join",from:myPlayerId,name:username||"P?"});
-      hostConn.on("data",(data)=>{
-        if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
-        else onLobbyMsg(data, hostConn);
-      });
-      hostConn.on("close",()=>{
-        if(state==="lobby_wait"||state==="game"){
-          // Try to migrate host instead of disconnecting
-          attemptHostMigration();
-        }
-      });
-    });
-
-    hostConn.on("error",(err)=>{
-      clearTimeout(joinTimer);
-      joinConnecting=false;
-      joinErrorMsg="CANNOT CONNECT!";
-      sfxMiss();
-      console.warn("hostConn error:",err);
-    });
-  });
-
-  myPeer.on("error",(err)=>{
-    clearTimeout(joinTimer);
-    joinConnecting=false;
-    joinErrorMsg="PEER ERROR — TRY AGAIN";
+  if(newHostId === myPlayerId){
+    becomeHost(code);
+  } else {
+    lobby.role       = "join";
+    hostConn         = null;
+    lobby.hostPeerId = newHostId;
+    lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
+    lobby.hostReady  = false;
+    myReady          = false;
+    joinErrorMsg     = "HOST LEFT — RECONNECTING...";
     sfxMiss();
-    console.warn("Peer error:",err);
-  });
+    // Reconnect to new host at the SAME room code (slight delay so new host opens first)
+    setTimeout(()=> openGuestPeer(code, true), 600);
+  }
+}
+
+function becomeHost(code){
+  lobby.role       = "host";
+  lobby.hostPeerId = myPlayerId;
+  lobby.hostName   = username ? username.toUpperCase() : "HOST";
+  lobby.code       = code;
+  hostConn         = null;
+  guestConns       = [];
+  myReady          = false;
+  lobbyReadyCount  = 0;
+  joinErrorMsg     = "";
+  Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
+
+  openHostPeer(code);
+  state = "lobby_wait";
+  sfxLobbyReady();
 }
 
 function onLobbyMsg(data, fromConn){
-  const {type,from,name,peers}=data;
+  const {type,from,name}=data;
+
   if(type==="welcome"){
-    if(peers) peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
-    lobby.hostName=name||"HOST"; lobby.hostReady=data.hostReady||false;
-    lobby.hostPeerId=data.hostPeerId||from;
-    if(data.newCode) lobby.code=data.newCode;
-    lobby.players=Object.keys(lobbyPeers).length+2;
-    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
+    // Full state from host — replace our peer list entirely
+    lobbyPeers={};
+    if(data.peers) data.peers.forEach(p=>{
+      if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};
+    });
+    lobby.hostName   = name||"HOST";
+    lobby.hostReady  = data.hostReady||false;
+    lobby.hostPeerId = data.hostPeerId||from;
+    lobby.code       = data.code||lobby.code;
+    lobby.players    = Object.keys(lobbyPeers).length+2; // +1 host +1 me
+    lobbyReadyCount  = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
     if(data.migrated){
-      // Host migration — reset ready state, stay in lobby
       myReady=false; lobbyReadyCount=0;
-      Object.keys(lobbyPeers).forEach(id=>{if(lobbyPeers[id]) lobbyPeers[id].ready=false;});
       joinErrorMsg="NEW HOST: "+(name||"HOST").toUpperCase().slice(0,8);
       setTimeout(()=>{if(joinErrorMsg.startsWith("NEW HOST")) joinErrorMsg="";},3000);
-      sfxLobbyReady(); state="lobby_wait";
+      sfxLobbyReady();
     } else {
       sfxPlayerJoin();
     }
+    state="lobby_wait";
+
   } else if(type==="join"){
+    // Host receives join from a guest
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from]={name:name||from,ready:false,conn:fromConn};
     if(fromConn) fromConn._peerId=from;
     lobby.players=Object.keys(lobbyPeers).length+1;
-    broadcastLobby({type:"joined",from,name,total:lobby.players,hostPeerId:myPlayerId,
-      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-  } else if(type==="joined"){
-    const isDisc=(from==="__disconnect__");
-    const isHeartbeat=(from==="__heartbeat__");
-    if(data.peers){
-      Object.keys(lobbyPeers).forEach(id=>{if(!data.peers.find(p=>p.id===id)&&id!==myPlayerId) delete lobbyPeers[id];});
-      data.peers.forEach(p=>{if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false};});
-    } else if(!isDisc&&!isHeartbeat&&!lobbyPeers[from]) lobbyPeers[from]={name:name||from,ready:false};
+    // Broadcast updated full list to all guests
+    broadcastLobby({
+      type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+    });
+
+  } else if(type==="sync_peers"){
+    // Authoritative peer list from host — replace ours entirely
+    const incoming = data.peers||[];
+    // Remove anyone not in the new list (except ourselves)
+    Object.keys(lobbyPeers).forEach(id=>{
+      if(!incoming.find(p=>p.id===id)) delete lobbyPeers[id];
+    });
+    // Add/update everyone in the new list
+    incoming.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
     if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
-    lobby.players=data.total||Object.keys(lobbyPeers).length+1;
-    lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
-    if(!isDisc&&!isHeartbeat) sfxPlayerJoin();
-    else if(isDisc) sfxMiss();
+    lobby.players = data.total||Object.keys(lobbyPeers).length+2;
+    lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
+    sfxMiss();
+
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready=data.isReady;
     lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
     if(lobby.role==="host") broadcastLobby({type:"readystate",from,isReady:data.isReady,readyCount:lobbyReadyCount,total:lobby.players});
+
   } else if(type==="readystate"){
     const who=data.from||from;
     const isHost=lobby.role==="join"&&who===lobby.hostPeerId;
@@ -574,60 +657,56 @@ function onLobbyMsg(data, fromConn){
     if(data.total) lobby.players=data.total;
     lobbyReadyCount=data.readyCount;
     if(data.isReady) sfxPlayerJoin(); else sfxBack();
+
   } else if(type==="countdown"){
     countdownActive=true; countdownValue=data.value;
     if(data.value>0) sfxCountdownBeep();
     else { sfxCountdownGo(); startGame("multi",lobby.required); }
+
+  } else if(type==="countdown_cancel"){
+    countdownActive=false; countdownValue=3; sfxMiss();
+
   } else if(type==="gameseed"){
-    // Save seed values — these must survive the upcoming resetAll() call in startGame
     multiGameSeed    = data.seed;
     multiGameStartMs = data.startMs;
     lastSpawnTick    = -1;
-    // Set our slot from host's authoritative order
     if(data.slotOrder){
       const mySlot = data.slotOrder.indexOf(myPlayerId);
       if(mySlot !== -1) localPlayerIdx = mySlot;
     }
+
   } else if(type==="rematchvote"){
     rematchVotes[from] = data.playAgain;
     if(lobby.role==="host") broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain, name:data.name});
     if(!data.playAgain){
-      // This peer is leaving — remove them
       delete lobbyPeers[from]; delete remoteStates[from];
       lobby.players = Object.keys(lobbyPeers).length+1;
     } else {
-      // This peer wants to play again — they'll show up in lobby_wait
       if(lobbyPeers[from]) lobbyPeers[from].ready = false;
     }
 
   } else if(type==="rematchresult"){
-    // No longer used but kept for safety
     if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; delete remoteStates[id]; });
     returnToLobby();
 
   } else if(type==="leave"){
     if(lobby.role==="host"){
-      // Host is authoritative: delete leaver then broadcast full updated peers list
       delete lobbyPeers[from]; delete remoteStates[from];
       lobby.players=Object.keys(lobbyPeers).length+1;
       lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
-      broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
-        hostPeerId:myPlayerId,
-        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-      if(countdownActive){countdownActive=false;countdownValue=3;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
+      broadcastLobby({
+        type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+      });
+      if(countdownActive){countdownActive=false;countdownValue=3;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}broadcastLobby({type:"countdown_cancel"});sfxMiss();}
     } else {
-      // Guest: apply directly (host's broadcast via type:"joined" should follow anyway)
       delete lobbyPeers[from]; delete remoteStates[from];
-      lobby.players=Object.keys(lobbyPeers).length+2;
+      lobby.players=Math.max(1,Object.keys(lobbyPeers).length+2);
       lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
       if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
     }
   }
 }
-
-// ── GAME STATE RELAY ──────────────────────────────────────────────────────────
-// Host: receives from guests, relays to all others + self draws
-// Guest: sends to host, receives relayed states from host
 
 function onGameMsg(data, fromConn){
   if(data.type==="wordcleared"){
@@ -699,16 +778,13 @@ function sendLobby(data){if(lobby.role==="host") broadcastLobby(data); else send
 function isOnlineConnected(){return myPeer&&myPeer.open;}
 
 // ── LOBBY HEARTBEAT ───────────────────────────────────────────────────────────
-// Host re-broadcasts authoritative peers list every 2s while in lobby_wait.
-// This ensures any lagged guest always catches up to the correct state.
 let lobbyHeartbeatTimer = null;
 function startLobbyHeartbeat(){
   stopLobbyHeartbeat();
   lobbyHeartbeatTimer = setInterval(()=>{
     if(state!=="lobby_wait" || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
     broadcastLobby({
-      type:"joined", from:"__heartbeat__", name:"", total:lobby.players,
-      hostPeerId:myPlayerId,
+      type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
     });
   }, 2000);
@@ -716,167 +792,18 @@ function startLobbyHeartbeat(){
 function stopLobbyHeartbeat(){ if(lobbyHeartbeatTimer){clearInterval(lobbyHeartbeatTimer);lobbyHeartbeatTimer=null;} }
 
 function leaveLobbyChannel(){
-  // Send leave message FIRST, then close connections after a short delay
-  // so the host has time to receive & relay the leave before connection drops
   try { sendLobby({type:"leave",from:myPlayerId}); } catch(e){}
   stopLobbyHeartbeat();
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3; myReady=false; lobbyReadyCount=0;
-
   const doClose=()=>{
     if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
     guestConns.forEach(c=>{try{c.close();}catch(e){} }); guestConns=[];
     if(myPeer){try{myPeer.destroy();}catch(e){} myPeer=null;}
     lobbyPeers={}; remoteStates={};
   };
-  // Give 400ms for the leave message to be delivered before tearing down
   setTimeout(doClose, 400);
 }
-
-// ── HOST MIGRATION ────────────────────────────────────────────────────────────
-// Strategy: deterministic election by sorted peerId.
-// Winner opens a new Peer on a KNOWN code = "wArena-" + newHostId (first 6 chars).
-// All remaining guests simply connect to that known address — no message needed.
-function attemptHostMigration(){
-  if(lobby.hostPeerId) delete lobbyPeers[lobby.hostPeerId];
-  lobby.players = Object.keys(lobbyPeers).length + 1;
-
-  const allIds    = [myPlayerId, ...Object.keys(lobbyPeers)].sort();
-  const newHostId = allIds[0];
-
-  // Derive a deterministic new room code from the new host's peerId
-  const newCode = newHostId.slice(0,6).toUpperCase();
-
-  if(newHostId === myPlayerId){
-    becomeHost(newCode);
-  } else {
-    // I'm a guest — connect directly to the new host's known address
-    lobby.role       = "join";
-    hostConn         = null;
-    lobby.hostPeerId = newHostId;
-    lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
-    lobby.hostReady  = false;
-    lobby.code       = newCode;
-    myReady          = false;
-    joinErrorMsg     = "HOST LEFT — RECONNECTING...";
-    sfxMiss();
-
-    // Retry connecting to the new host with backoff — they need a moment to open
-    let retries = 0;
-    function tryConnect(){
-      if(lobby.hostPeerId !== newHostId) return; // situation changed, abort
-      if(!myPeer || !myPeer.open){
-        if(retries++ < 10){ setTimeout(tryConnect, 600); }
-        else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
-        return;
-      }
-      if(hostConn){ try{hostConn.close();}catch(e){} hostConn=null; }
-      hostConn = myPeer.connect("wArena-"+newCode, {reliable:true, serialization:"json"});
-      const connTimeout = setTimeout(()=>{
-        if(hostConn && !hostConn.open){
-          try{hostConn.close();}catch(e){} hostConn=null;
-          if(retries++ < 8){ setTimeout(tryConnect, 800); }
-          else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
-        }
-      }, 3000);
-      hostConn.on("open", ()=>{
-        clearTimeout(connTimeout);
-        joinErrorMsg = "";
-        hostConn.send({type:"join", from:myPlayerId, name:username||"P?"});
-        hostConn.on("data", (data)=>{
-          if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, hostConn);
-          else onLobbyMsg(data, hostConn);
-        });
-        hostConn.on("close", ()=>{ if(state==="lobby_wait"||state==="game") attemptHostMigration(); });
-        state = "lobby_wait";
-        sfxPlayerJoin();
-      });
-      hostConn.on("error", ()=>{
-        clearTimeout(connTimeout);
-        hostConn = null;
-        if(retries++ < 8){ setTimeout(tryConnect, 800); }
-        else { joinErrorMsg = "RECONNECT FAILED — HOST GONE"; sfxMiss(); }
-      });
-    }
-    setTimeout(tryConnect, 400); // small delay so new host opens first
-  }
-}
-
-function becomeHost(newCode){
-  if(!newCode) newCode = myPlayerId.slice(0,6).toUpperCase();
-  lobby.role       = "host";
-  lobby.hostPeerId = myPlayerId;
-  lobby.hostName   = username ? username.toUpperCase() : "HOST";
-  lobby.code       = newCode;
-  hostConn         = null;
-  guestConns       = [];
-  myReady          = false;
-  lobbyReadyCount  = 0;
-  joinErrorMsg     = "";
-
-  Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
-
-  if(myPeer){ try{myPeer.destroy();}catch(e){} myPeer=null; }
-
-  myPeer = new Peer("wArena-"+newCode, {
-    config:{ iceServers:[
-      {urls:"stun:stun.l.google.com:19302"},
-      {urls:"stun:stun1.l.google.com:19302"},
-      {urls:"stun:global.stun.twilio.com:3478"},
-    ]}
-  });
-
-  myPeer.on("open", ()=>{
-    myPeer.on("connection", (conn)=>{
-      conn.on("open", ()=>{
-        guestConns.push(conn);
-        conn.on("data", (data)=>{
-          if(data.type==="join"&&data.from){ conn._peerId=data.from; }
-          if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
-          else onLobbyMsg(data, conn);
-        });
-        conn.on("close", ()=>{
-          guestConns = guestConns.filter(c=>c!==conn);
-          const disconnectedId = conn._peerId ||
-            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]?.conn===conn);
-          if(disconnectedId){
-            delete lobbyPeers[disconnectedId];
-            delete remoteStates[disconnectedId];
-          }
-          lobby.players = Object.keys(lobbyPeers).length + 1;
-          lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
-          broadcastLobby({type:"joined",from:"__disconnect__",name:"",total:lobby.players,
-            hostPeerId:myPlayerId,
-            peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))});
-          if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}sfxMiss();}
-        });
-        conn.on("error", (e)=>console.warn("Guest conn error:",e));
-        // Send welcome with migrated=true so guests know to reset ready state
-        conn.send({
-          type:"welcome", from:myPlayerId, name:username||"HOST",
-          hostReady:false, hostPeerId:myPlayerId,
-          migrated:true, newCode,
-          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:false}))
-        });
-        // Update our own lobby state once guest reconnects
-        lobbyPeers[conn._peerId||""] = lobbyPeers[conn._peerId||""] ||
-          {name:"P?", ready:false, conn};
-      });
-    });
-
-    sfxLobbyReady();
-    startLobbyHeartbeat();
-    state = "lobby_wait";
-    console.log("Became new host with code:", newCode);
-  });
-
-  myPeer.on("error", (e)=>{
-    console.warn("New host peer error:", e);
-    joinErrorMsg = "HOST ERROR — TRY AGAIN";
-  });
-}
-
-
 
 function startCountdown(){
   countdownActive=true; countdownValue=3; sfxCountdownBeep();
