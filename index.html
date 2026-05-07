@@ -456,6 +456,7 @@ function openHostPeer(code){
         conn.send({
           type:"welcome", from:myPlayerId, name:username||"HOST",
           hostReady:myReady, hostPeerId:myPlayerId, code,
+          required: lobby.required,
           migrated: isMigratedHost,
           peers:Object.entries(lobbyPeers).filter(([id])=>id!==conn._peerId).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
         });
@@ -530,7 +531,7 @@ function _doGuestConnect(code, isMigration, retries){
   conn.on("open", ()=>{
     clearTimeout(timeout);
     joinConnecting=false; joinErrorMsg="";
-    conn.send({type:"join", from:myPlayerId, name:username||"P?"});
+    conn.send({type:"join", from:myPlayerId, name:username||"P?", required:playerCount});
     conn.on("data", (data)=>{
       if(data.type==="gamestate"||data.type==="wordcleared") onGameMsg(data, conn);
       else onLobbyMsg(data, conn);
@@ -695,6 +696,7 @@ function onLobbyMsg(data, fromConn){
     lobby.hostReady  = data.hostReady||false;
     lobby.hostPeerId = data.hostPeerId||from;
     lobby.code       = data.code||lobby.code;
+    if(data.required){ lobby.required=data.required; playerCount=data.required; }
     lobby.players    = Object.keys(lobbyPeers).length+2; // +1 host +1 me
     lobbyReadyCount  = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
     if(data.migrated){
@@ -717,6 +719,11 @@ function onLobbyMsg(data, fromConn){
 
   } else if(type==="join"){
     // Host receives join from a guest
+    // Reject if the guest expects a different player-count mode
+    if(data.required && data.required !== lobby.required){
+      if(fromConn){ try{ fromConn.send({type:"rejected", reason:"THIS IS A "+(lobby.required===2?"2P":"4P")+" ROOM!"}); }catch(e){} }
+      return;
+    }
     if(!lobbyPeers[from]) sfxPlayerJoin();
     lobbyPeers[from]={name:name||from,ready:false,conn:fromConn};
     if(fromConn) fromConn._peerId=from;
@@ -785,6 +792,15 @@ function onLobbyMsg(data, fromConn){
       const mySlot = data.slotOrder.indexOf(myPlayerId);
       if(mySlot !== -1) localPlayerIdx = mySlot;
     }
+
+  } else if(type==="rejected"){
+    // Host rejected us — wrong lobby mode
+    leaveLobbyChannel();
+    state="joingame";
+    joinInput="";
+    joinConnecting=false;
+    joinErrorMsg=data.reason||"CANNOT JOIN THIS LOBBY";
+    sfxMiss();
 
   } else if(type==="rematchvote"){
     // No-op — each player handles their own choice independently (same as 2P)
