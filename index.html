@@ -626,13 +626,31 @@ function becomeHost(code, keepState, prevState){
 
   if(keepState){
     sfxMiss();
-    setTimeout(()=>{
+    // Poll every 500ms for 8s after migration.
+    // Each tick: remove guests that never reconnected, broadcast real list.
+    // This ensures guests who leave immediately after migration are removed
+    // even if their leave message never reached us (no hostConn yet).
+    const _migExpected = new Set(Object.keys(lobbyPeers));
+    let _migTicks = 0;
+    const _migPoll = setInterval(()=>{
+      if(lobby.role !== "host"){ clearInterval(_migPoll); return; }
+      _migTicks++;
+      // After 1.5s, start pruning guests that still have no live guestConn
+      if(_migTicks >= 3){
+        _migExpected.forEach(id=>{
+          if(lobbyPeers[id] && !guestConns.some(c=>c._peerId===id)){
+            delete lobbyPeers[id]; delete remoteStates[id];
+          }
+        });
+      }
+      lobby.players = Object.keys(lobbyPeers).length+1;
+      lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
       broadcastLobby({
-        type:"sync_peers", total:Object.keys(lobbyPeers).length+1,
-        hostPeerId:myPlayerId,
+        type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
         peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
       });
-    }, 1500);
+      if(_migTicks >= 16) clearInterval(_migPoll); // stop after 8s
+    }, 500);
   } else {
     state = "lobby_wait";
     sfxLobbyReady();
@@ -901,7 +919,7 @@ let lobbyHeartbeatTimer = null;
 function startLobbyHeartbeat(){
   stopLobbyHeartbeat();
   lobbyHeartbeatTimer = setInterval(()=>{
-    if((state!=="lobby_wait" && state!=="gameover_multi") || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
+    if(state!=="lobby_wait" || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
     broadcastLobby({
       type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
@@ -2163,27 +2181,8 @@ function gameover_multi(){
   const gmMenuHov=(lastMouseX>310&&lastMouseX<540&&lastMouseY>510&&lastMouseY<558);
   pixelBox({text:"PLAY AGAIN",x:60,y:510,w:230,h:48},gmPlayHov?C.green:C.teal);
   pixelBox({text:"MENU",x:310,y:510,w:230,h:48},gmMenuHov?C.amber:C.purple);
-  // Show who's still in the lobby (connected peers) so leaving is visible in real-time
-  const stillHere = [
-    ...(lobby.role==="host" ? [{name:(username||"HOST").toUpperCase(),color:C.teal}] : [{name:(lobby.hostName||"HOST").toUpperCase(),color:C.teal}]),
-    ...Object.values(lobbyPeers).map(p=>({name:(p.name||"?").toUpperCase(),color:C.purple})),
-    {name:(username||"ME").toUpperCase(),color:C.green,isMe:true}
-  ];
-  ctx.font=`7px ${PX}`;
-  const inLobbyTxt="STILL HERE: "+stillHere.map(p=>p.name).join("  ·  ");
-  const ilw=ctx.measureText(inLobbyTxt).width;
-  ctx.fillStyle="#1a2a3a"; ctx.fillRect(W/2-ilw/2-8,560,ilw+16,18);
-  // Draw each name in its color
-  let cx2=W/2-ilw/2;
-  stillHere.forEach((p,i)=>{
-    const prefix=i>0?"  ·  ":"";
-    const prefixW=ctx.measureText(prefix).width;
-    ctx.fillStyle="#2a3a55"; ctx.fillText(prefix,cx2,574); cx2+=prefixW;
-    const nw2=ctx.measureText(p.name).width;
-    ctx.fillStyle=p.isMe?C.green:p.color; ctx.fillText(p.name,cx2,574); cx2+=nw2;
-  });
   ctx.font=`7px ${PX}`; const hint="Play Again returns to lobby";
-  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,592);
+  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,574);
 }
 
 function gameover(){
