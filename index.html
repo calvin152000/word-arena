@@ -931,16 +931,24 @@ function stopLobbyHeartbeat(){ if(lobbyHeartbeatTimer){clearInterval(lobbyHeartb
 function leaveLobbyChannel(){
   // Send leave to host AND broadcast to all guests directly so removal is instant
   try { sendLobby({type:"leave",from:myPlayerId}); } catch(e){}
-  // Host: guests hear leave via conn.on("close") in openHostPeer
-  // Guest: host hears via sendToHost above, then host broadcasts sync_peers to other guests
   stopLobbyHeartbeat();
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3; myReady=false; lobbyReadyCount=0;
+  // Snapshot current peer/conn references NOW — if the user immediately re-hosts
+  // or re-joins, openHostPeer() will create a NEW myPeer. The delayed doClose must
+  // only destroy the OLD instances it captured, never the new ones.
+  const peerToClose   = myPeer;
+  const hostToClose   = hostConn;
+  const guestsToClose = [...guestConns];
+  hostConn   = null;
+  guestConns = [];
+  lobbyPeers = {}; remoteStates = {};
   const doClose=()=>{
-    if(hostConn){try{hostConn.close();}catch(e){} hostConn=null;}
-    guestConns.forEach(c=>{try{c.close();}catch(e){} }); guestConns=[];
-    if(myPeer){try{myPeer.destroy();}catch(e){} myPeer=null;}
-    lobbyPeers={}; remoteStates={};
+    if(hostToClose){ try{hostToClose.close();}catch(e){} }
+    guestsToClose.forEach(c=>{try{c.close();}catch(e){} });
+    // Only destroy if myPeer hasn't been replaced by a new session
+    if(myPeer===peerToClose){ try{peerToClose.destroy();}catch(e){} myPeer=null; }
+    else { try{peerToClose.destroy();}catch(e){} } // still destroy old, but don't null myPeer
   };
   setTimeout(doClose, 400);
 }
