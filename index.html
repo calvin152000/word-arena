@@ -422,28 +422,42 @@ function openHostPeer(code){
         });
         conn.on("close", ()=>{
           guestConns = guestConns.filter(c=>c!==conn);
+          // Resolve peerId from conn._peerId OR by scanning lobbyPeers for matching conn ref
           const disconnectedId = conn._peerId ||
-            Object.keys(lobbyPeers).find(id=>lobbyPeers[id]?.conn===conn);
+            Object.keys(lobbyPeers).find(id => lobbyPeers[id]?.conn === conn);
+          let disconnectedSlot = undefined;
           if(disconnectedId){
+            if(remoteStates[disconnectedId]?.slotIdx !== undefined)
+              disconnectedSlot = remoteStates[disconnectedId].slotIdx;
             delete lobbyPeers[disconnectedId];
             delete remoteStates[disconnectedId];
           }
           lobby.players = Object.keys(lobbyPeers).length+1;
           lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
-          // Broadcast authoritative peers list to all remaining guests
+          // If disconnect happened during game, mark slot dead and notify guests
+          if(state==="game" && disconnectedSlot!==undefined && players[disconnectedSlot]){
+            players[disconnectedSlot].dead = true;
+            players[disconnectedSlot].disconnected = true;
+            broadcastLobby({type:"player_disconnected", slotIdx:disconnectedSlot, peerId:disconnectedId});
+          }
+          // Always broadcast updated peer list so all guests remove the leaver
           broadcastLobby({
             type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
-            peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+            peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
           });
           if(countdownActive){countdownActive=false;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}broadcastLobby({type:"countdown_cancel"});sfxMiss();}
           sfxMiss();
         });
         conn.on("error", (e)=>console.warn("Guest conn error:",e));
         // Welcome: tell this guest who's here
+        // migrated:true if we became host via migration (not original host)
+        const isMigratedHost = (lobby.role==="host" && lobby.hostPeerId===myPlayerId &&
+          guestConns.length > 0); // already has some guests = we were migrated
         conn.send({
           type:"welcome", from:myPlayerId, name:username||"HOST",
           hostReady:myReady, hostPeerId:myPlayerId, code,
-          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
+          migrated: isMigratedHost,
+          peers:Object.entries(lobbyPeers).filter(([id])=>id!==conn._peerId).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
         });
       });
     });
@@ -471,7 +485,8 @@ function joinGame(){joinInput="";joinErrorMsg="";joinConnecting=false;state="joi
 function openGuestPeer(code, isMigration){
   // Guest connects to host at wArena-<code>
   joinConnecting = !isMigration;
-  joinErrorMsg = isMigration ? "RECONNECTING..." : "";
+  // Only show reconnecting message in lobby — during game/gameover migrate silently
+  joinErrorMsg = (isMigration && state==="lobby_wait") ? "RECONNECTING..." : (!isMigration ? "" : joinErrorMsg);
 
   if(myPeer && myPeer.open){
     _doGuestConnect(code, isMigration, 0);
@@ -521,7 +536,19 @@ function _doGuestConnect(code, isMigration, retries){
       else onLobbyMsg(data, conn);
     });
     conn.on("close", ()=>{
-      if(state==="lobby_wait"||state==="game") attemptHostMigration();
+      // Always attempt migration if we lose host connection, regardless of state
+      // Mark old host slot as disconnected if mid-game
+      if((state==="game"||state==="gameover_multi") && lobby.hostPeerId){
+        const hostState = remoteStates[lobby.hostPeerId];
+        if(hostState && hostState.slotIdx!==undefined && players[hostState.slotIdx]){
+          players[hostState.slotIdx].dead = true;
+          players[hostState.slotIdx].disconnected = true;
+        }
+      }
+      // Migrate silently — do NOT change state for gameover_multi or game
+      if(state==="lobby_wait"||state==="game"||state==="gameover_multi"){
+        attemptHostMigration();
+      }
     });
     if(!isMigration) state="lobby_wait";
     sfxPlayerJoin();
@@ -553,43 +580,88 @@ async function submitJoinCode(){
 // new host (lexicographically smallest peerId). The new host reopens on the
 // SAME room code so everyone else can reconnect without any extra signalling.
 function attemptHostMigration(){
+  // Preserve current state — only lobby_wait should redirect to lobby
+  const prevState = state;
+  const keepState = (prevState === "game" || prevState === "gameover_multi");
+
   if(lobby.hostPeerId) delete lobbyPeers[lobby.hostPeerId];
 
   const allIds    = [myPlayerId, ...Object.keys(lobbyPeers)].sort();
   const newHostId = allIds[0];
-  const code      = lobby.code; // reuse same code!
+  const code      = lobby.code;
 
   if(newHostId === myPlayerId){
-    becomeHost(code);
+    becomeHost(code, keepState, prevState);
   } else {
     lobby.role       = "join";
     hostConn         = null;
     lobby.hostPeerId = newHostId;
     lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
     lobby.hostReady  = false;
-    myReady          = false;
-    joinErrorMsg     = "HOST LEFT — RECONNECTING...";
+    if(!keepState){ myReady = false; }
+    // Only show message if in lobby — during game/gameover just reconnect silently
+    if(!keepState) joinErrorMsg = "HOST LEFT — RECONNECTING...";
     sfxMiss();
-    // Reconnect to new host at the SAME room code (slight delay so new host opens first)
+    // Reconnect to new host silently — slight delay so new host opens first
     setTimeout(()=> openGuestPeer(code, true), 600);
   }
 }
 
-function becomeHost(code){
+function becomeHost(code, keepState, prevState){
   lobby.role       = "host";
   lobby.hostPeerId = myPlayerId;
   lobby.hostName   = username ? username.toUpperCase() : "HOST";
   lobby.code       = code;
   hostConn         = null;
-  guestConns       = [];
-  myReady          = false;
-  lobbyReadyCount  = 0;
   joinErrorMsg     = "";
-  Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
 
+  if(!keepState){
+    myReady         = false;
+    lobbyReadyCount = 0;
+    Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
+  }
+
+  guestConns = [];
   openHostPeer(code);
-  state = "lobby_wait";
-  sfxLobbyReady();
+
+  if(keepState){
+    sfxMiss();
+    setTimeout(()=>{
+      broadcastLobby({
+        type:"sync_peers", total:Object.keys(lobbyPeers).length+1,
+        hostPeerId:myPlayerId,
+        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
+      });
+    }, 1500);
+  } else {
+    state = "lobby_wait";
+    sfxLobbyReady();
+
+    // After becoming host in lobby, give guests 3s to reconnect.
+    // Any peer in lobbyPeers that hasn't reconnected by then is gone — remove them.
+    const expectedPeers = new Set(Object.keys(lobbyPeers));
+    setTimeout(()=>{
+      if(lobby.role !== "host") return;
+      let changed = false;
+      expectedPeers.forEach(id => {
+        // If this peer never reconnected (not in guestConns), remove them
+        const reconnected = guestConns.some(c => c._peerId === id);
+        if(!reconnected && lobbyPeers[id]){
+          delete lobbyPeers[id];
+          delete remoteStates[id];
+          changed = true;
+        }
+      });
+      if(changed){
+        lobby.players = Object.keys(lobbyPeers).length + 1;
+        lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length + (myReady?1:0);
+        broadcastLobby({
+          type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+          peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
+        });
+      }
+    }, 3000);
+  }
 }
 
 function onLobbyMsg(data, fromConn){
@@ -608,14 +680,22 @@ function onLobbyMsg(data, fromConn){
     lobby.players    = Object.keys(lobbyPeers).length+2; // +1 host +1 me
     lobbyReadyCount  = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
     if(data.migrated){
-      myReady=false; lobbyReadyCount=0;
-      joinErrorMsg="NEW HOST: "+(name||"HOST").toUpperCase().slice(0,8);
-      setTimeout(()=>{if(joinErrorMsg.startsWith("NEW HOST")) joinErrorMsg="";},3000);
-      sfxLobbyReady();
+      // Only go to lobby_wait if we were actually in the lobby
+      // During game or gameover, just silently update host info and stay on current screen
+      if(state==="lobby_wait"){
+        myReady=false; lobbyReadyCount=0;
+        joinErrorMsg="NEW HOST: "+(name||"HOST").toUpperCase().slice(0,8);
+        setTimeout(()=>{if(joinErrorMsg.startsWith("NEW HOST")) joinErrorMsg="";},3000);
+        sfxLobbyReady();
+        state="lobby_wait";
+      } else {
+        // Silent migration — stay on current screen (game or gameover_multi)
+        sfxMiss();
+      }
     } else {
       sfxPlayerJoin();
+      state="lobby_wait";
     }
-    state="lobby_wait";
 
   } else if(type==="join"){
     // Host receives join from a guest
@@ -623,15 +703,27 @@ function onLobbyMsg(data, fromConn){
     lobbyPeers[from]={name:name||from,ready:false,conn:fromConn};
     if(fromConn) fromConn._peerId=from;
     lobby.players=Object.keys(lobbyPeers).length+1;
-    // Broadcast updated full list to all guests
+    // Broadcast updated full list — only include peers whose conn is alive (reconnected)
+    const activePeers = Object.entries(lobbyPeers).filter(([id,p])=>{
+      // Keep if they have a live conn in guestConns, OR they have no conn ref (host-side legacy entry)
+      return !p.conn || guestConns.includes(p.conn);
+    });
+    // Prune dead peers from lobbyPeers
+    Object.keys(lobbyPeers).forEach(id=>{
+      if(lobbyPeers[id].conn && !guestConns.includes(lobbyPeers[id].conn)){
+        delete lobbyPeers[id]; delete remoteStates[id];
+      }
+    });
+    lobby.players=Object.keys(lobbyPeers).length+1;
     broadcastLobby({
       type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
-      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
     });
 
   } else if(type==="sync_peers"){
-    // Authoritative peer list from host — replace ours entirely
+    // Authoritative peer list from host — fully replace ours so ghosts are removed
     const incoming = data.peers||[];
+    const prevCount = Object.keys(lobbyPeers).length;
     // Remove anyone not in the new list (except ourselves)
     Object.keys(lobbyPeers).forEach(id=>{
       if(!incoming.find(p=>p.id===id)) delete lobbyPeers[id];
@@ -641,7 +733,8 @@ function onLobbyMsg(data, fromConn){
     if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
     lobby.players = data.total||Object.keys(lobbyPeers).length+2;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
-    sfxMiss();
+    // Only play sound if someone actually left (count decreased)
+    if(Object.keys(lobbyPeers).length < prevCount) sfxMiss();
 
   } else if(type==="ready"){
     if(lobbyPeers[from]) lobbyPeers[from].ready=data.isReady;
@@ -676,34 +769,60 @@ function onLobbyMsg(data, fromConn){
     }
 
   } else if(type==="rematchvote"){
-    rematchVotes[from] = data.playAgain;
-    if(lobby.role==="host") broadcastLobby({type:"rematchvote", from, playAgain:data.playAgain, name:data.name});
-    if(!data.playAgain){
-      delete lobbyPeers[from]; delete remoteStates[from];
-      lobby.players = Object.keys(lobbyPeers).length+1;
-    } else {
-      if(lobbyPeers[from]) lobbyPeers[from].ready = false;
-    }
+    // No-op — each player handles their own choice independently (same as 2P)
+    // rematchvote messages are ignored; leaveLobbyChannel() handles disconnection for menu choosers
 
   } else if(type==="rematchresult"){
-    if(data.leaving) data.leaving.forEach(id=>{ delete lobbyPeers[id]; delete remoteStates[id]; });
-    returnToLobby();
+    // Legacy — no longer used
+
+  } else if(type==="player_disconnected"){
+    // A guest disconnected mid-game — mark their slot dead immediately
+    const dslot = data.slotIdx;
+    if(dslot !== undefined && players[dslot] && dslot !== localPlayerIdx){
+      players[dslot].dead = true;
+      players[dslot].disconnected = true;
+    }
+    if(data.peerId){ delete lobbyPeers[data.peerId]; delete remoteStates[data.peerId]; }
 
   } else if(type==="leave"){
+    // If the host is the one leaving, trigger migration immediately — don't wait for conn.close
+    if(lobby.role==="join" && from===lobby.hostPeerId){
+      attemptHostMigration();
+      return;
+    }
     if(lobby.role==="host"){
+      const leavingSlot = remoteStates[from]?.slotIdx;
+      // Close matching guestConn if still open (e.g. guest sent leave before conn.close fired)
+      const leavingConn = guestConns.find(c=>c._peerId===from);
+      if(leavingConn){ try{leavingConn.close();}catch(e){} }
+      // Always remove regardless of whether they were in lobbyPeers yet
+      guestConns = guestConns.filter(c=>c._peerId!==from);
       delete lobbyPeers[from]; delete remoteStates[from];
       lobby.players=Object.keys(lobbyPeers).length+1;
       lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0);
+      if(state==="game" && leavingSlot!==undefined && players[leavingSlot]){
+        players[leavingSlot].dead = true;
+        players[leavingSlot].disconnected = true;
+        broadcastLobby({type:"player_disconnected", slotIdx:leavingSlot, peerId:from});
+      }
+      // Always broadcast updated list so all guests remove the leaver
       broadcastLobby({
         type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
-        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
+        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
       });
       if(countdownActive){countdownActive=false;countdownValue=3;if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}broadcastLobby({type:"countdown_cancel"});sfxMiss();}
     } else {
+      // Guest side: remove leaver from local peer list immediately — no waiting for host relay
+      const leavingSlot = remoteStates[from]?.slotIdx;
       delete lobbyPeers[from]; delete remoteStates[from];
-      lobby.players=Math.max(1,Object.keys(lobbyPeers).length+2);
+      lobby.players=Math.max(1,Object.keys(lobbyPeers).length+(lobby.role==="host"?1:2));
       lobbyReadyCount=Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
+      if(state==="game" && leavingSlot!==undefined && players[leavingSlot]){
+        players[leavingSlot].dead = true;
+        players[leavingSlot].disconnected = true;
+      }
       if(countdownActive){countdownActive=false;countdownValue=3;sfxMiss();}
+      sfxMiss();
     }
   }
 }
@@ -782,17 +901,20 @@ let lobbyHeartbeatTimer = null;
 function startLobbyHeartbeat(){
   stopLobbyHeartbeat();
   lobbyHeartbeatTimer = setInterval(()=>{
-    if(state!=="lobby_wait" || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
+    if((state!=="lobby_wait" && state!=="gameover_multi") || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
     broadcastLobby({
       type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
     });
-  }, 2000);
+  }, 500);
 }
 function stopLobbyHeartbeat(){ if(lobbyHeartbeatTimer){clearInterval(lobbyHeartbeatTimer);lobbyHeartbeatTimer=null;} }
 
 function leaveLobbyChannel(){
+  // Send leave to host AND broadcast to all guests directly so removal is instant
   try { sendLobby({type:"leave",from:myPlayerId}); } catch(e){}
+  // Host: guests hear leave via conn.on("close") in openHostPeer
+  // Guest: host hears via sendToHost above, then host broadcasts sync_peers to other guests
   stopLobbyHeartbeat();
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3; myReady=false; lobbyReadyCount=0;
@@ -868,25 +990,15 @@ function castRematchVote(playAgain){
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
   if(rematchTickInterval){ clearInterval(rematchTickInterval); rematchTickInterval=null; }
 
-  // Notify others of our decision
-  const msg = {type:"rematchvote", from:myPlayerId, playAgain, name: username||"P?"};
-  if(lobby.role==="host") broadcastLobby(msg);
-  else sendToHost(msg);
-
   if(!playAgain){
-    // Going to menu immediately
+    // MENU — fully disconnect immediately, same as 2P
     leaveLobbyChannel(); state="menu"; resetAll(); startBGM("menu");
     return;
   }
 
-  // Play Again — go to lobby immediately, wait for others there
-  if(lobby.role==="host"){
-    // Host resets lobby and waits
-    returnToLobby();
-  } else {
-    // Guest goes to lobby_wait — host is already waiting there (or will rejoin)
-    returnToLobby();
-  }
+  // PLAY AGAIN — go straight to lobby, same as 2P
+  // No voting system — each player decides independently
+  returnToLobby();
 }
 
 function returnToLobby(){
@@ -898,6 +1010,20 @@ function returnToLobby(){
   if(lobby.role==="join") lobby.hostReady=false;
   lobby.players = Object.keys(lobbyPeers).length+1;
   state="lobby_wait"; startBGM("menu");
+
+  // Host: reopen peer so new players can join the lobby
+  if(lobby.role==="host" && lobby.code){
+    // Reopen host peer on same code so new players can join
+    if(!myPeer || !myPeer.open){
+      openHostPeer(lobby.code);
+    }
+    // Sync current lobby state to all existing guests
+    broadcastLobby({
+      type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
+    });
+    startLobbyHeartbeat();
+  }
 }
 
 // Not needed anymore but kept for network message handling
@@ -1613,10 +1739,18 @@ function game4P(){
       ctx.fillStyle = "rgba(0,0,0,0.78)";
       ctx.fillRect(fx, contentY, fw, contentH);
       ctx.font = `${isMe?8:7}px ${PX}`;
-      const dw1 = ctx.measureText("GAME").width;
-      pxDraw("GAME", fx + (fw-dw1)/2, H/2 - 8, C.red, isMe?8:7, true);
-      const dw2 = ctx.measureText("OVER").width;
-      pxDraw("OVER", fx + (fw-dw2)/2, H/2 + 8, C.red, isMe?8:7, true);
+      if(p.disconnected){
+        // Player left / disconnected mid-game
+        const dl1 = ctx.measureText("LEFT").width;
+        pxDraw("LEFT", fx + (fw-dl1)/2, H/2 - 8, "#557799", isMe?8:7, true);
+        const dl2 = ctx.measureText("GAME").width;
+        pxDraw("GAME", fx + (fw-dl2)/2, H/2 + 8, "#557799", isMe?8:7, true);
+      } else {
+        const dw1 = ctx.measureText("GAME").width;
+        pxDraw("GAME", fx + (fw-dw1)/2, H/2 - 8, C.red, isMe?8:7, true);
+        const dw2 = ctx.measureText("OVER").width;
+        pxDraw("OVER", fx + (fw-dw2)/2, H/2 + 8, C.red, isMe?8:7, true);
+      }
       ctx.font = `6px ${PX}`;
       const stxt = `${p.score}pts`;
       const sw   = ctx.measureText(stxt).width;
@@ -2029,8 +2163,27 @@ function gameover_multi(){
   const gmMenuHov=(lastMouseX>310&&lastMouseX<540&&lastMouseY>510&&lastMouseY<558);
   pixelBox({text:"PLAY AGAIN",x:60,y:510,w:230,h:48},gmPlayHov?C.green:C.teal);
   pixelBox({text:"MENU",x:310,y:510,w:230,h:48},gmMenuHov?C.amber:C.purple);
+  // Show who's still in the lobby (connected peers) so leaving is visible in real-time
+  const stillHere = [
+    ...(lobby.role==="host" ? [{name:(username||"HOST").toUpperCase(),color:C.teal}] : [{name:(lobby.hostName||"HOST").toUpperCase(),color:C.teal}]),
+    ...Object.values(lobbyPeers).map(p=>({name:(p.name||"?").toUpperCase(),color:C.purple})),
+    {name:(username||"ME").toUpperCase(),color:C.green,isMe:true}
+  ];
+  ctx.font=`7px ${PX}`;
+  const inLobbyTxt="STILL HERE: "+stillHere.map(p=>p.name).join("  ·  ");
+  const ilw=ctx.measureText(inLobbyTxt).width;
+  ctx.fillStyle="#1a2a3a"; ctx.fillRect(W/2-ilw/2-8,560,ilw+16,18);
+  // Draw each name in its color
+  let cx2=W/2-ilw/2;
+  stillHere.forEach((p,i)=>{
+    const prefix=i>0?"  ·  ":"";
+    const prefixW=ctx.measureText(prefix).width;
+    ctx.fillStyle="#2a3a55"; ctx.fillText(prefix,cx2,574); cx2+=prefixW;
+    const nw2=ctx.measureText(p.name).width;
+    ctx.fillStyle=p.isMe?C.green:p.color; ctx.fillText(p.name,cx2,574); cx2+=nw2;
+  });
   ctx.font=`7px ${PX}`; const hint="Play Again returns to lobby";
-  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,574);
+  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,592);
 }
 
 function gameover(){
