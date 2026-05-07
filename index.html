@@ -1485,127 +1485,153 @@ function game4P(){
   applyRemoteStates();
   sendGameState();
 
-  const me        = players[localPlayerIdx];
+  const me = players[localPlayerIdx];
+  const t0 = Date.now() * 0.003;
+
+  // ── Layout: Tetris Effect Connected — main panel LEFT, slightly wider ─────
+  // All 4 panels side by side. Local player always drawn first (leftmost).
+  // Panel order on screen: [localPlayer, opp0, opp1, opp2]
+  const GAP      = 3;
+  const HDR      = 28;
+  const ME_FRAC  = 0.31;   // main panel fraction of total width
+  const OPP_FRAC = (1 - ME_FRAC - (GAP * 3) / W) / 3;
+  const ME_W     = Math.floor(W * ME_FRAC);
+  const OPP_W    = Math.floor((W - ME_W - GAP * 3) / 3);
+
+  // Build display order: local player first, then opponents left-to-right
   const opponents = [0,1,2,3].filter(i => i !== localPlayerIdx);
+  const displayOrder = [localPlayerIdx, ...opponents]; // [me, opp0, opp1, opp2]
 
-  // ── Layout: main panel LEFT (65%), 3 enemies stacked RIGHT (35%) ──────────
-  const MAIN_W  = Math.round(W * 0.65);
-  const DIVW    = 4;
-  const RX      = MAIN_W + DIVW;
-  const RW      = W - RX;
-  const FRAME_H = Math.floor(H / 3);
-  const HDR     = 24;
+  // Compute X positions
+  const widths = displayOrder.map((pi, di) => di === 0 ? ME_W : OPP_W);
+  const xPos   = [];
+  let cx = 0;
+  displayOrder.forEach((pi, di) => {
+    xPos.push(cx);
+    cx += widths[di] + GAP;
+  });
 
-  // ── Right column background ───────────────────────────────────────────────
-  ctx.fillStyle = "#060616";
-  ctx.fillRect(RX, 0, RW, H);
+  // ── Draw each panel ───────────────────────────────────────────────────────
+  displayOrder.forEach((pi, di) => {
+    const p    = players[pi];
+    const isMe = di === 0;
+    const fx   = xPos[di];
+    const fw   = widths[di];
+    const clr  = p.dead ? "#223344" : p.color;
+    const t1   = Date.now() * 0.004;
 
-  // ── Animated main divider ─────────────────────────────────────────────────
-  const t0   = Date.now() * 0.003;
-  const glow = 0.6 + 0.3 * Math.sin(t0);
-  ctx.fillStyle = "#0a0a1e";
-  ctx.fillRect(MAIN_W, 0, DIVW, H);
-  ctx.fillStyle = `rgba(${hexRgb(me.color)},${glow.toFixed(2)})`;
-  ctx.fillRect(MAIN_W + 1, 0, 2, H);
+    // Panel background
+    ctx.fillStyle = isMe ? "#07071e" : "#05051a";
+    ctx.fillRect(fx, 0, fw, H);
 
-  // ── Main pane — local player, full height, full-size ─────────────────────
-  drawPane(me, 0, 0, MAIN_W, H, true);
-
-  // ── 3 Enemy frames — stacked full height on the right ────────────────────
-  opponents.forEach((oppIdx, slot) => {
-    const p   = players[oppIdx];
-    const fx  = RX;
-    const fy  = slot * FRAME_H;
-    const fw  = RW;
-    const fh  = slot === 2 ? H - fy : FRAME_H;
-    const clr = p.dead ? "#223344" : p.color;
-    const t1  = Date.now() * 0.004;
-
-    // Frame background
-    ctx.fillStyle = "#05051a";
-    ctx.fillRect(fx, fy, fw, fh);
-
-    // Horizontal separator between cards
-    if(slot > 0){
-      ctx.fillStyle = p.dead ? "rgba(30,30,60,0.8)" : `rgba(${hexRgb(p.color)},0.3)`;
-      ctx.fillRect(fx, fy, fw, 2);
+    // Top colored accent bar
+    const topH = 4;
+    if(!p.dead){
+      const pulse = 0.7 + 0.3 * Math.sin(t1 + di * 0.9);
+      ctx.fillStyle = `rgba(${hexRgb(p.color)},${pulse.toFixed(2)})`;
+    } else {
+      ctx.fillStyle = "#1a1a2e";
     }
+    ctx.fillRect(fx, 0, fw, topH);
 
-    // Colored left accent bar
-    const accentW = 5;
-    const accentPulse = p.dead ? 0 : 0.7 + 0.3 * Math.sin(t1 + slot * 1.2);
-    ctx.fillStyle = p.dead ? "#1a1a33" : `rgba(${hexRgb(p.color)},${accentPulse.toFixed(2)})`;
-    ctx.fillRect(fx, fy + (slot>0?2:0), accentW, fh - (slot>0?2:0));
+    // Header background
+    ctx.fillStyle = p.dead ? "rgba(10,10,22,0.95)" : `rgba(${hexRgb(p.color)},0.18)`;
+    ctx.fillRect(fx, topH, fw, HDR);
 
-    // Right border
-    ctx.fillStyle = p.dead ? "#1a1a33" : `rgba(${hexRgb(p.color)},0.25)`;
-    ctx.fillRect(fx + fw - 2, fy, 2, fh);
+    // Header bottom divider line
+    ctx.fillStyle = p.dead ? "#1a2233" : `rgba(${hexRgb(p.color)},0.6)`;
+    ctx.fillRect(fx, topH + HDR - 2, fw, 2);
 
-    // Header bar
-    ctx.fillStyle = p.dead ? "rgba(10,10,25,0.95)" : `rgba(${hexRgb(p.color)},0.20)`;
-    ctx.fillRect(fx + accentW, fy + (slot>0?2:0), fw - accentW - 2, HDR);
-
-    // Header bottom line
-    ctx.fillStyle = p.dead ? "#223344" : clr;
-    ctx.fillRect(fx + accentW, fy + (slot>0?2:0) + HDR - 2, fw - accentW - 2, 2);
-
-    // Player name
-    ctx.font = `7px ${PX}`;
-    const nm  = p.name || `P${oppIdx+1}`;
-    const nmw = ctx.measureText(nm).width;
-    if(!p.dead){ ctx.shadowColor = p.color; ctx.shadowBlur = 8; }
-    ctx.fillStyle = p.dead ? "#445566" : p.color;
-    ctx.fillText(nm, fx + accentW + (fw - accentW - nmw) / 2,
-                     fy + (slot>0?2:0) + HDR - 7);
+    // "P1 · NAME" label left side
+    const pnum = `P${pi+1}`;
+    ctx.font = `${isMe?8:7}px ${PX}`;
+    ctx.fillStyle = p.dead ? "#334455" : clr;
+    if(!p.dead){ ctx.shadowColor = clr; ctx.shadowBlur = isMe?10:6; }
+    ctx.fillText(pnum, fx + 6, topH + HDR - 8);
     ctx.shadowBlur = 0;
 
-    // Score
+    // YOU badge for main panel
+    if(isMe){
+      const bx = fx + ctx.measureText(pnum).width + 10;
+      const by = topH + 5;
+      ctx.fillStyle = `rgba(${hexRgb(me.color)},0.25)`;
+      ctx.fillRect(bx, by, 22, 12);
+      ctx.strokeStyle = me.color; ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, 22, 12);
+      ctx.fillStyle = me.color; ctx.shadowColor = me.color; ctx.shadowBlur = 8;
+      ctx.font = `6px ${PX}`;
+      ctx.fillText("YOU", bx + 3, by + 9);
+      ctx.shadowBlur = 0;
+    }
+
+    // Player name centered
+    ctx.font = `${isMe?8:7}px ${PX}`;
+    const nm  = p.name || `P${pi+1}`;
+    const nmw = ctx.measureText(nm).width;
+    if(!p.dead){ ctx.shadowColor = p.color; ctx.shadowBlur = isMe?10:6; }
+    ctx.fillStyle = p.dead ? "#445566" : p.color;
+    ctx.fillText(nm, fx + (fw - nmw) / 2, topH + HDR - 8);
+    ctx.shadowBlur = 0;
+
+    // Score right side
+    ctx.font = `6px ${PX}`;
     const sc  = `${p.score}`;
-    ctx.font  = `6px ${PX}`;
     const scw = ctx.measureText(sc).width;
     ctx.fillStyle = p.dead ? "#334455" : C.amber;
-    ctx.fillText(sc, fx + fw - scw - 8, fy + (slot>0?2:0) + HDR - 7);
+    ctx.fillText(sc, fx + fw - scw - 6, topH + HDR - 8);
 
     // Combo badge
     if(p.combo > 1 && !p.dead){
       const cb    = `x${p.combo}`;
       const cbClr = p.combo >= 5 ? C.amber : C.green;
-      ctx.fillStyle = cbClr; ctx.shadowColor = cbClr; ctx.shadowBlur = 6;
-      ctx.fillText(cb, fx + accentW + 4, fy + (slot>0?2:0) + HDR - 7);
+      const cbw   = ctx.measureText(cb).width;
+      ctx.fillStyle = cbClr; ctx.shadowColor = cbClr; ctx.shadowBlur = 5;
+      ctx.fillText(cb, fx + fw - scw - cbw - 12, topH + HDR - 8);
       ctx.shadowBlur = 0;
     }
 
-    // Danger pulse
+    // Danger pulse overlay
     const esc2 = getEscalation(p.score);
     if(esc2.danger >= 3 && !p.dead){
-      const pulse = 0.04 + 0.03 * Math.sin(Date.now() * 0.008);
+      const pulse = 0.04 + 0.03 * Math.sin(Date.now() * 0.008 + di);
       ctx.fillStyle = `rgba(255,20,50,${pulse.toFixed(3)})`;
-      ctx.fillRect(fx, fy, fw, fh);
+      ctx.fillRect(fx, 0, fw, H);
     }
 
-    // Game content — full size drawPane (not mini)
-    const contentY = fy + (slot>0?2:0) + HDR;
-    const contentH = fh - (slot>0?2:0) - HDR;
+    // ── Game content ─────────────────────────────────────────────────────────
+    const contentY = topH + HDR;
+    const contentH = H - contentY;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(fx + accentW, contentY, fw - accentW - 2, contentH);
+    ctx.rect(fx, contentY, fw, contentH);
     ctx.clip();
-    drawPane(p, fx + accentW, contentY, fw - accentW - 2, contentH, false);
+    drawPane(p, fx, contentY, fw, contentH, isMe, !isMe);
     ctx.restore();
 
     // DEAD overlay
     if(p.dead){
       ctx.fillStyle = "rgba(0,0,0,0.78)";
-      ctx.fillRect(fx + accentW, contentY, fw - accentW - 2, contentH);
-      ctx.font = `8px ${PX}`;
-      const dw = ctx.measureText("GAME OVER").width;
-      pxDraw("GAME OVER", fx + accentW + (fw - accentW - dw) / 2,
-                          fy + fh / 2 - 4, C.red, 8, true);
+      ctx.fillRect(fx, contentY, fw, contentH);
+      ctx.font = `${isMe?8:7}px ${PX}`;
+      const dw1 = ctx.measureText("GAME").width;
+      pxDraw("GAME", fx + (fw-dw1)/2, H/2 - 8, C.red, isMe?8:7, true);
+      const dw2 = ctx.measureText("OVER").width;
+      pxDraw("OVER", fx + (fw-dw2)/2, H/2 + 8, C.red, isMe?8:7, true);
       ctx.font = `6px ${PX}`;
-      const stxt = `${p.score} pts`;
+      const stxt = `${p.score}pts`;
       const sw   = ctx.measureText(stxt).width;
       ctx.fillStyle = C.amber;
-      ctx.fillText(stxt, fx + accentW + (fw - accentW - sw) / 2, fy + fh / 2 + 14);
+      ctx.fillText(stxt, fx + (fw-sw)/2, H/2 + 22);
+    }
+
+    // Vertical divider (right edge of each panel except last)
+    if(di < 3){
+      const dvx    = fx + fw;
+      const gAlpha = 0.3 + 0.2 * Math.sin(t0 + di * 1.1);
+      ctx.fillStyle = "#08081a";
+      ctx.fillRect(dvx, 0, GAP, H);
+      ctx.fillStyle = `rgba(${hexRgb(p.dead?"80,80,120":p.color)},${gAlpha.toFixed(2)})`;
+      ctx.fillRect(dvx + 1, 0, 1, H);
     }
   });
 
