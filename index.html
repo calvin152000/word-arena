@@ -95,6 +95,7 @@ let lastState   = "";
 let howToPlayPage = 0;
 const HTP_PAGES   = 3;
 let multiForfeitConfirm = false;
+let spectatorMode = false; // true when local player is dead in 4P and watching others
 
 // ── THEME ─────────────────────────────────────────────────────────────────────
 const THEMES = [
@@ -584,6 +585,8 @@ let myPlayerId=Math.random().toString(36).slice(2,8).toUpperCase();
 let lobbyPeers={}; // id → { name, ready, conn (host only) }
 let lobby={ code:null,required:2,players:0,role:null,hostName:"HOST",hostReady:false,hostPeerId:null };
 let leaveLobbyConfirm=false,myReady=false,lobbyReadyCount=0;
+let editingLobbyName=false,lobbyNameInput="",lobbyNameErr="";
+let optionsEditingName=false,optionsNameInput="",optionsNameErr="";
 let countdownActive=false,countdownValue=3,countdownInterval=null;
 let joinInput="",joinErrorMsg="",joinConnecting=false;
 let isOnlineGame=false, localPlayerIdx=0, gameSessionId=0;
@@ -956,6 +959,20 @@ function onLobbyMsg(data, fromConn){
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))
     });
 
+  } else if(type==="rename"){
+    // Guest is changing their display name — host updates and rebroadcasts
+    if(lobby.role==="host" && lobbyPeers[from]){
+      const newName = data.name||from;
+      // Deduplicate
+      const takenNames=[lobby.hostName||"HOST",...Object.entries(lobbyPeers).filter(([id])=>id!==from).map(([,p])=>p.name)];
+      let assignedName=newName;
+      if(takenNames.includes(assignedName)){let s=2;while(takenNames.includes(assignedName+"_"+s))s++;assignedName=assignedName+"_"+s;}
+      lobbyPeers[from].name=assignedName;
+      if(assignedName!==newName){if(fromConn){try{fromConn.send({type:"name_assigned",name:assignedName});}catch(e){}}}
+      broadcastLobby({type:"sync_peers",total:lobby.players,hostPeerId:myPlayerId,hostName:lobby.hostName||username,
+        peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+    }
+
   } else if(type==="sync_peers"){
     // Authoritative peer list from host — fully replace ours so ghosts are removed
     const incoming = data.peers||[];
@@ -967,6 +984,7 @@ function onLobbyMsg(data, fromConn){
     // Add/update everyone in the new list
     incoming.forEach(p=>{ if(p.id!==myPlayerId) lobbyPeers[p.id]={name:p.name,ready:p.ready||false}; });
     if(data.hostPeerId) lobby.hostPeerId=data.hostPeerId;
+    if(data.hostName) lobby.hostName=data.hostName; // update host display name
     lobby.players = data.total||Object.keys(lobbyPeers).length+2;
     lobbyReadyCount = Object.values(lobbyPeers).filter(p=>p.ready).length+(myReady?1:0)+(lobby.hostReady?1:0);
     // Only play sound if someone actually left (count decreased)
@@ -1156,7 +1174,7 @@ function startLobbyHeartbeat(){
   lobbyHeartbeatTimer = setInterval(()=>{
     if(state!=="lobby_wait" || lobby.role!=="host") { stopLobbyHeartbeat(); return; }
     broadcastLobby({
-      type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId,
+      type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId, hostName:lobby.hostName||username,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready}))
     });
   }, 500);
@@ -1384,7 +1402,7 @@ function pickNextWord(){
 function startGame(diff,numPlayers){
   state="game"; difficulty=diff; playerCount=numPlayers||1; paused=false;
   isOnlineGame=(numPlayers>1&&isOnlineConnected());
-  if(!isOnlineGame) localPlayerIdx=0;
+  if(!isOnlineGame){localPlayerIdx=0;lobby.code=null;lobby.players=0;lobby.role=null;}
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3;
   initWordPool(diff); // fresh shuffled pool, no repeats
@@ -1412,7 +1430,7 @@ function resetAll(){
     }
     players.push(makePlayerState(i,PLAYER_COLORS[i],pname));
   }
-  lastStanding=null; lastStandingTimer=0; multiForfeitConfirm=false;
+  lastStanding=null; lastStandingTimer=0; multiForfeitConfirm=false; spectatorMode=false;
   myRematchVote=null; rematchVotes={};
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
   multiSpawnInterval=130; multiRoundScore=0; multiCurrentLength=3; lastSpawnTick=-1;
@@ -1499,7 +1517,6 @@ c.addEventListener("mousemove",(e)=>{
   else pauseBtnHovered=false;
   if(state==="splash"&&splashPhase==="name"){const was2=nameConfirmHovered;nameConfirmHovered=hit({x:185,y:368,w:230,h:55},lastMouseX,lastMouseY);if(nameConfirmHovered&&!was2)sfxHover();}
   else nameConfirmHovered=false;
-  if(!["menu","difficulty","multiplayer","hostjoin","lobby_wait","options","howtoplay"].includes(state)) return;
   let allBtns=[];
   if(state==="menu") allBtns=menuButtons;
   if(state==="difficulty") allBtns=diffButtons;
@@ -1558,8 +1575,7 @@ document.addEventListener("mousedown",(e)=>{
     if(hit({x:160,y:345,w:120,h:50},mx,my)){leaveLobbyChannel();state="menu";lobby.code=null;lobby.players=0;lobby.role=null;leaveLobbyConfirm=false;startBGM("menu");}
     if(hit({x:320,y:345,w:120,h:50},mx,my)) leaveLobbyConfirm=false;
     return;
-  }
-  if(state==="howtoplay"){
+  }  if(state==="howtoplay"){
     const arrowY=H-74;
     if(mx>30&&mx<140&&my>arrowY&&my<arrowY+44&&howToPlayPage>0){howToPlayPage--;sfxClick();return;}
     if(mx>W-140&&mx<W-30&&my>arrowY&&my<arrowY+44&&howToPlayPage<HTP_PAGES-1){howToPlayPage++;sfxClick();return;}
@@ -1568,6 +1584,8 @@ document.addEventListener("mousedown",(e)=>{
   }
   if(state==="menu"){
     menuButtons.forEach((b,i)=>{if(hit(b,mx,my)){sfxTransition();if(i===0)state="difficulty";if(i===1)state="multiplayer";if(i===2){state="howtoplay";howToPlayPage=0;}if(i===3)state="options";}});
+    // Back to Lobby
+    if(lobby.code&&lobby.role&&hit({x:150,y:520,w:300,h:48},mx,my)){sfxTransition();state="lobby_wait";startBGM("menu");return;}
   } else if(state==="difficulty"){
     diffButtons.forEach((b,i)=>{if(hit(b,mx,my)){if(i===4){sfxBack();state="menu";return;}sfxFanfare();setTimeout(()=>startGame(["easy","medium","hard","difficult"][i],1),350);}});
   } else if(state==="multiplayer"){
@@ -1579,15 +1597,23 @@ document.addEventListener("mousedown",(e)=>{
     hostJoinButtons.forEach((b,i)=>{if(hit(b,mx,my)){if(i===0){sfxTransition();hostGame();}if(i===1){sfxTransition();joinGame();}if(i===2){sfxBack();leaveLobbyChannel();state="menu";lobby.code=null;lobby.players=0;lobby.role=null;}}});
   } else if(state==="lobby_wait"){
     const rcY=lobby.required===4?415:307,diffY=rcY+46,hintY=diffY+58,backY=hintY+116;
-    if(hit({x:200,y:backY,w:200,h:42},mx,my)){leaveLobbyConfirm=true;sfxClick();return;}
+    // MENU button — go to menu but stay in lobby session
+    if(hit({x:60,y:backY,w:200,h:42},mx,my)){sfxBack();state="menu";startBGM("menu");return;}
+    // LEAVE button — confirm then actually disconnect
+    if(hit({x:340,y:backY,w:200,h:42},mx,my)){leaveLobbyConfirm=true;sfxClick();return;}
     if(lobby.role==="host"&&!countdownActive){
       const canStart=lobby.players>=lobby.required&&lobbyReadyCount>=lobby.players;
       if(hit({x:110,y:hintY+54,w:380,h:52},mx,my)){if(canStart){sfxFanfare();startCountdown();}else sfxMiss();return;}
     }
   } else if(state==="options"){
     if(mx>150&&mx<450&&my>210&&my<275){soundEnabled=!soundEnabled;applyMuteState();if(soundEnabled&&audioReady&&bgmState===null)startBGM("menu");}
-    for(let i=0;i<THEMES.length;i++){const col=i%3,row=Math.floor(i/3),tx=110+col*130,ty=375+row*68;if(mx>tx&&mx<tx+110&&my>ty&&my<ty+52){applyTheme(i);sfxClick();return;}}
-    if(mx>180&&mx<420&&my>580&&my<635){sfxBack();state="menu";}
+    // Player name field click
+    if(mx>100&&mx<500&&my>340&&my<392){
+      if(!optionsEditingName){optionsEditingName=true;optionsNameInput=username||"";optionsNameErr="";sfxClick();}
+      return;
+    }
+    for(let i=0;i<THEMES.length;i++){const col=i%3,row=Math.floor(i/3),tx=110+col*130,ty=461+row*68;if(mx>tx&&mx<tx+110&&my>ty&&my<ty+52){applyTheme(i);sfxClick();return;}}
+    if(mx>180&&mx<420&&my>666&&my<718){if(optionsEditingName){optionsEditingName=false;optionsNameInput="";optionsNameErr="";}sfxBack();state="menu";}
   } else if(state==="gameover"){
     if(mx>80&&mx<300&&my>500&&my<548){sfxFanfare();setTimeout(()=>startGame(difficulty,1),200);}
     if(mx>310&&mx<530&&my>500&&my<548){sfxTransition();state="menu";paused=false;resetAll();startBGM("menu");}
@@ -1608,8 +1634,6 @@ document.addEventListener("keydown",(e)=>{
   else if(audioCtx&&audioCtx.state==="suspended") audioCtx.resume();
   if(state==="lobby_wait"&&e.key===" "&&!countdownActive){
     e.preventDefault(); myReady=!myReady;
-    const guestReady=Object.values(lobbyPeers).filter(p=>p.ready).length;
-    lobbyReadyCount=guestReady+(myReady?1:0)+(lobby.role==="join"&&lobby.hostReady?1:0);
     if(lobby.role==="host") broadcastLobby({type:"readystate",from:myPlayerId,isReady:myReady,readyCount:lobbyReadyCount,total:lobby.players});
     else sendToHost({type:"ready",from:myPlayerId,isReady:myReady});
     if(myReady) sfxLobbyReady(); else sfxBack();
@@ -1619,9 +1643,15 @@ document.addEventListener("keydown",(e)=>{
     if(lobby.players>=lobby.required&&lobbyReadyCount>=lobby.players){sfxFanfare();startCountdown();}else sfxMiss();return;
   }
   if(state==="howtoplay"){
-    if(e.key==="Escape"||e.key==="Backspace"){sfxBack();state="menu";howToPlayPage=0;return;}
     if((e.key==="ArrowRight"||e.key==="d")&&howToPlayPage<HTP_PAGES-1){howToPlayPage++;sfxClick();return;}
     if((e.key==="ArrowLeft"||e.key==="a")&&howToPlayPage>0){howToPlayPage--;sfxClick();return;}
+    return;
+  }
+  if(state==="options"&&optionsEditingName){
+    if(e.key==="Backspace"){optionsNameInput=optionsNameInput.slice(0,-1);optionsNameErr="";sfxType();return;}
+    if(e.key==="Enter"){const v=optionsNameInput.trim();if(v.length===0){optionsNameErr="NAME CANNOT BE EMPTY!";sfxMiss();}else{username=v;applyLobbyNameChange(v);optionsEditingName=false;optionsNameInput="";optionsNameErr="";sfxFanfare();}return;}
+    if(e.key==="Escape"){optionsEditingName=false;optionsNameInput="";optionsNameErr="";sfxBack();return;}
+    if(/^[a-zA-Z0-9 _-]$/.test(e.key)&&optionsNameInput.length<12){optionsNameInput+=e.key;optionsNameErr="";sfxType();}
     return;
   }
   if(state==="joingame"){
@@ -1889,6 +1919,89 @@ function applyRemoteStates(){
   });
 }
 
+function drawSpectatorMode(){
+  const alive = players.filter(p=>!p.dead);
+  const GAP   = 3;
+  const HDR   = 28;
+  const t0    = Date.now() * 0.003;
+
+  // Header bar - SPECTATOR label
+  ctx.fillStyle = "rgba(0,0,0,0.85)"; ctx.fillRect(0,0,W,HDR+6);
+  ctx.fillStyle = "#1a1a00"; ctx.fillRect(0,HDR+6,W,2);
+  ctx.strokeStyle = C.amber; ctx.lineWidth=1; ctx.strokeRect(0,0,W,HDR+6);
+  const specTxt = "👁  SPECTATING"; ctx.font=`8px ${PX}`;
+  const stw = ctx.measureText(specTxt).width;
+  ctx.shadowColor=C.amber; ctx.shadowBlur=8; ctx.fillStyle=C.amber;
+  ctx.fillText(specTxt, W/2-stw/2, HDR);  ctx.shadowBlur=0;
+  // Show "YOU ELIMINATED" on right
+  ctx.font=`7px ${PX}`; const me=players[localPlayerIdx];
+  const elimTxt=`${me?me.name:"YOU"} ELIMINATED · ${me?me.score:0}pts`;
+  const etw=ctx.measureText(elimTxt).width;
+  ctx.fillStyle="#664400"; ctx.fillText(elimTxt, W-etw-8, HDR);
+
+  if(alive.length===0){
+    centered("ALL ELIMINATED",H/2,C.red,16,true);
+    return;
+  }
+
+  // Draw alive players equally across full width below header
+  const topY    = HDR + 8;
+  const panelH  = H - topY;
+  const panelW  = Math.floor((W - GAP*(alive.length-1)) / alive.length);
+
+  alive.forEach((p, i)=>{
+    const fx = i*(panelW+GAP);
+    const pi = players.indexOf(p);
+    const clr = p.color;
+    const pulse = 0.7+0.3*Math.sin(t0+i*0.9);
+
+    // Panel background
+    ctx.fillStyle="#07071e"; ctx.fillRect(fx, topY, panelW, panelH);
+    // Top accent
+    ctx.fillStyle=`rgba(${hexRgb(clr)},${pulse.toFixed(2)})`; ctx.fillRect(fx, topY, panelW, 4);
+    // Header strip
+    ctx.fillStyle=`rgba(${hexRgb(clr)},0.18)`; ctx.fillRect(fx, topY+4, panelW, HDR);
+    ctx.fillStyle=`rgba(${hexRgb(clr)},0.6)`; ctx.fillRect(fx, topY+4+HDR-2, panelW, 2);
+    // Name
+    ctx.font=`8px ${PX}`; const nm=p.name||`P${pi+1}`;
+    const nmw=ctx.measureText(nm).width;
+    ctx.shadowColor=clr; ctx.shadowBlur=8; ctx.fillStyle=clr;
+    ctx.fillText(nm, fx+(panelW-nmw)/2, topY+4+HDR-8); ctx.shadowBlur=0;
+    // Score
+    ctx.font=`6px ${PX}`; const sc=`${p.score}`;
+    const scw=ctx.measureText(sc).width;
+    ctx.fillStyle=C.amber; ctx.fillText(sc, fx+panelW-scw-6, topY+4+HDR-8);
+    // "LAST STANDING" badge if only 1 alive
+    if(alive.length===1){
+      const ls="★ LAST STANDING ★"; const lsw=ctx.measureText(ls).width;
+      ctx.shadowColor=C.amber;ctx.shadowBlur=10;ctx.fillStyle=C.amber;
+      ctx.fillText(ls,fx+(panelW-lsw)/2,topY+4+HDR+16);ctx.shadowBlur=0;
+    }
+
+    // Draw game content clipped
+    const contentY=topY+4+HDR;
+    const contentH=panelH-4-HDR;
+    ctx.save(); ctx.beginPath(); ctx.rect(fx, contentY, panelW, contentH); ctx.clip();
+    drawPane(p, fx, contentY, panelW, contentH, false, true);
+    ctx.restore();
+
+    // Divider
+    if(i < alive.length-1){
+      ctx.fillStyle="#08081a"; ctx.fillRect(fx+panelW, topY, GAP, panelH);
+      ctx.fillStyle=`rgba(${hexRgb(clr)},0.3)`; ctx.fillRect(fx+panelW+1, topY, 1, panelH);
+    }
+  });
+
+  // Spectator watermark at bottom
+  const t2=Date.now()*0.003;
+  const sAlpha=0.2+0.15*Math.sin(t2);
+  ctx.globalAlpha=sAlpha; ctx.font=`7px ${PX}`;
+  const wt="SPECTATOR MODE — WATCHING REMAINING PLAYERS";
+  const wtw=ctx.measureText(wt).width;
+  ctx.fillStyle=C.amber; ctx.fillText(wt,W/2-wtw/2,H-8);
+  ctx.globalAlpha=1;
+}
+
 // ── GAME SCREENS ──────────────────────────────────────────────────────────────
 function game4P(){
   tickMultiSpawnCoordinator();
@@ -1896,6 +2009,17 @@ function game4P(){
   sendGameState();
 
   const me = players[localPlayerIdx];
+
+  // ── SPECTATOR MODE: local player dead in 4P ────────────────────────────────
+  if(me && me.dead){
+    if(!spectatorMode){ spectatorMode=true; }
+    drawSpectatorMode();
+    checkMultiGameOver();
+    drawMultiForfeitOverlay();
+    return;
+  }
+  spectatorMode = false;
+
   const t0 = Date.now() * 0.003;
 
   // ── Layout: Tetris Effect Connected — main panel LEFT, slightly wider ─────
@@ -2205,8 +2329,21 @@ function menu(){
   ctx.fillStyle=C.teal; ctx.fillRect(0,80,W,2); ctx.fillRect(0,178,W,2);
   centered("WORD",132,C.teal,36,true); centered("ARENA",174,C.blue,36,true);
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
-  if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",560,C.dim+"ff",10,false);
+
   if(username){ctx.font=`8px ${PX}`;pxDraw("HI, "+username+"!",14,H-16,C.purple,8,true);}
+  // Back to Lobby button — only shown when there's an active lobby session
+  if(lobby.code&&lobby.role){
+    const btlHov=hit({x:150,y:520,w:300,h:48},lastMouseX,lastMouseY);
+    const pulse=0.7+0.3*Math.sin(Date.now()*0.005);
+    ctx.fillStyle=`rgba(${hexRgb(C.green)},${(0.08*pulse).toFixed(3)})`; ctx.fillRect(150,520,300,48);
+    ctx.strokeStyle=btlHov?C.green:`rgba(${hexRgb(C.green)},${pulse.toFixed(2)})`; ctx.lineWidth=2; ctx.strokeRect(150,520,300,48);
+    ctx.font=`9px ${PX}`; const btlt="◀ BACK TO LOBBY"; const btlw=ctx.measureText(btlt).width;
+    ctx.shadowColor=C.green; ctx.shadowBlur=btlHov?12:5; ctx.fillStyle=C.green;
+    ctx.fillText(btlt,300-btlw/2,548); ctx.shadowBlur=0;
+    // Show room code hint
+    ctx.font=`7px ${PX}`; const rch=`ROOM: ${lobby.code}`; const rchw=ctx.measureText(rch).width;
+    ctx.fillStyle="#336644"; ctx.fillText(rch,300-rchw/2,572);
+  }
 }
 function difficultyMenu(){centered("SELECT DIFFICULTY",110,C.purple,16,true);diffButtons.forEach((b,i)=>pixelBox(b,diffColors[i]||C.teal));}
 function multiMenu(){centered("MULTIPLAYER MODE",110,C.teal,16,true);multiButtons.forEach((b,i)=>pixelBox(b,multiColors[i]));}
@@ -2305,13 +2442,19 @@ function lobbyWait(){
     if(canStart&&startHov){ctx.shadowColor=C.green;ctx.shadowBlur=16;}
     ctx.font=`8px ${PX}`; const stw=ctx.measureText(startTxt).width;
     ctx.fillStyle=startClr; ctx.fillText(startTxt,W/2-stw/2,startBtn.y+startBtn.h/2+4); ctx.shadowBlur=0;
-    pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
+    const menuHov2=hit({x:60,y:hintY+116,w:200,h:42},lastMouseX,lastMouseY);
+    const leaveHov=hit({x:340,y:hintY+116,w:200,h:42},lastMouseX,lastMouseY);
+    pixelBox({text:"MENU",x:60,y:hintY+116,w:200,h:42},menuHov2?C.amber:C.teal);
+    pixelBox({text:"LEAVE",x:340,y:hintY+116,w:200,h:42},leaveHov?C.red:"#882233");
   } else if(!countdownActive){
     ctx.fillStyle="#070720"; ctx.fillRect(110,hintY+54,380,52); ctx.strokeStyle="#334466"; ctx.lineWidth=1; ctx.strokeRect(110,hintY+54,380,52);
     const wdots2=".".repeat(Math.floor(Date.now()/500)%4);
     ctx.font=`8px ${PX}`; const wt2="WAITING FOR HOST TO START"+wdots2; const wt2w=ctx.measureText(wt2).width;
     ctx.fillStyle="#445566"; ctx.fillText(wt2,W/2-wt2w/2,hintY+85);
-    pixelBox({text:"BACK",x:200,y:hintY+116,w:200,h:42},C.red);
+    const menuHov3=hit({x:60,y:hintY+116,w:200,h:42},lastMouseX,lastMouseY);
+    const leaveHov2=hit({x:340,y:hintY+116,w:200,h:42},lastMouseX,lastMouseY);
+    pixelBox({text:"MENU",x:60,y:hintY+116,w:200,h:42},menuHov3?C.amber:C.teal);
+    pixelBox({text:"LEAVE",x:340,y:hintY+116,w:200,h:42},leaveHov2?C.red:"#882233");
   }
   // Online indicator
   const isOnline=isOnlineConnected(),netClr=isOnline?C.green:C.amber,netTxt=isOnline?"● ONLINE":"● CONNECTING";
@@ -2336,6 +2479,7 @@ function lobbyWait(){
     ctx.font=`8px ${PX}`; const dw=ctx.measureText("MIXED MODE").width;
     pxDraw("MIXED MODE",W/2-dw/2,418,C.purple,8,true); centered("GET READY TO TYPE!",448,"#6677aa",7,false);
   }
+  // Edit Name modal — now in Options screen
 }
 
 function drawJoinGame(){
@@ -2371,10 +2515,29 @@ function drawOptions(){
   else{ctx.strokeStyle=C.red;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(ix+18,iy+2);ctx.lineTo(ix+28,iy+16);ctx.stroke();ctx.beginPath();ctx.moveTo(ix+28,iy+2);ctx.lineTo(ix+18,iy+16);ctx.stroke();}
   pxDraw("SOUND",220,236,tclr,11,son); pxDraw(son?"ON":"OFF",220,258,son?C.green:C.red,10,false);
   pxDraw("CLICK TO TOGGLE",150,295,"#2a4a6a",8,false);
-  pxDraw("COLOR THEME",100,332,"#6677aa",9,false);
-  ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,340,400,1);
+  // ── PLAYER NAME ────────────────────────────────────────────────────────────
+  pxDraw("PLAYER NAME",100,322,"#6677aa",9,false);
+  ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,330,400,1);
+  const nameActive=optionsEditingName;
+  const nameClr=nameActive?C.teal:C.purple;
+  ctx.fillStyle=nameActive?`rgba(${hexRgb(C.teal)},0.1)`:`rgba(${hexRgb(C.purple)},0.06)`; ctx.fillRect(100,340,400,52);
+  ctx.strokeStyle=nameClr; ctx.lineWidth=2; ctx.strokeRect(100,340,400,52);
+  if(nameActive){
+    const cur=Math.floor(Date.now()/500)%2===0?"_":" ";
+    const disp=optionsNameInput+cur;
+    ctx.font=`14px ${PX}`; const dw2=ctx.measureText(disp).width;
+    pxDraw(disp,300-dw2/2,374,C.teal,14,true);
+    if(optionsNameErr&&Math.floor(Date.now()/400)%2===0){ctx.font=`7px ${PX}`;const ew=ctx.measureText(optionsNameErr).width;ctx.fillStyle=C.red;ctx.fillText(optionsNameErr,300-ew/2,396);}
+    else{ctx.font=`7px ${PX}`;const ph="ENTER TO CONFIRM · ESC TO CANCEL";const phw=ctx.measureText(ph).width;ctx.fillStyle="#2a3a55";ctx.fillText(ph,300-phw/2,396);}
+  } else {
+    ctx.font=`12px ${PX}`; const unm=username||"---";const unmw=ctx.measureText(unm).width;
+    ctx.shadowColor=C.purple;ctx.shadowBlur=6;ctx.fillStyle=C.purple;ctx.fillText(unm,300-unmw/2,374);ctx.shadowBlur=0;
+    ctx.font=`7px ${PX}`; const et="CLICK TO EDIT";const etw2=ctx.measureText(et).width;ctx.fillStyle="#2a3a55";ctx.fillText(et,300-etw2/2,394);
+  }
+  pxDraw("COLOR THEME",100,418,"#6677aa",9,false);
+  ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,426,400,1);
   for(let i=0;i<THEMES.length;i++){
-    const th=THEMES[i],col=i%3,row=Math.floor(i/3),tx=110+col*130,ty=375+row*68,isActive=i===currentThemeIdx;
+    const th=THEMES[i],col=i%3,row=Math.floor(i/3),tx=110+col*130,ty=461+row*68,isActive=i===currentThemeIdx;
     const t=Date.now()*0.004,pulse=0.5+0.5*Math.sin(t);
     ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(tx+3,ty+3,110,52);
     ctx.fillStyle=`rgba(${hexRgb(th.teal)},0.12)`; ctx.fillRect(tx,ty,110,52);
@@ -2386,7 +2549,7 @@ function drawOptions(){
     if(isActive){ctx.shadowColor=th.teal;ctx.shadowBlur=8;} ctx.fillStyle=isActive?th.teal:`rgba(${hexRgb(th.teal)},0.8)`;
     ctx.fillText(th.name,tx+(110-nw)/2,ty+16); ctx.shadowBlur=0;
   }
-  pixelBox({text:"BACK",x:180,y:580,w:240,h:52},C.blue);
+  pixelBox({text:"BACK",x:180,y:666,w:240,h:52},C.blue);
 }
 
 // ── SPLASH ────────────────────────────────────────────────────────────────────
@@ -2423,6 +2586,27 @@ function confirmUsername(){
   if(val.length===0){usernameErr="NAME CANNOT BE EMPTY!";sfxMiss();return;}
   username=val; usernameInput=""; usernameErr=""; sfxFanfare();
   setTimeout(()=>{startBGM("menu");state="menu";lastState="splash";},350);
+}
+
+function confirmLobbyName(){
+  const val=lobbyNameInput.trim();
+  if(val.length===0){lobbyNameErr="NAME CANNOT BE EMPTY!";sfxMiss();return;}
+  username=val;
+  applyLobbyNameChange(val);
+  editingLobbyName=false; lobbyNameInput=""; lobbyNameErr=""; sfxFanfare();
+}
+
+function applyLobbyNameChange(val){
+  if(!lobby.role) return; // not in a lobby
+  if(lobby.role==="host"){
+    lobby.hostName=val;
+    // Broadcast full peer list so all guests see updated host name
+    broadcastLobby({type:"sync_peers",total:lobby.players,hostPeerId:myPlayerId,hostName:val,
+      peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+  } else {
+    // Tell host our new name — host will re-broadcast sync_peers to everyone
+    sendToHost({type:"rename",from:myPlayerId,name:val});
+  }
 }
 
 // ── GAME OVER SCREENS ─────────────────────────────────────────────────────────
@@ -2599,6 +2783,23 @@ function htpPage2(){
   });
 }
 
+function drawGlobalCountdownOverlay(){
+  ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="#05051a"; ctx.fillRect(100,180,400,320);
+  ctx.strokeStyle=C.amber; ctx.shadowColor=C.amber; ctx.shadowBlur=24; ctx.lineWidth=2;
+  ctx.strokeRect(100,180,400,320); ctx.shadowBlur=0;
+  const s=8; ctx.fillStyle=C.amber;
+  [[100,180],[496,180],[100,496],[496,496]].forEach(([px,py])=>{ctx.fillRect(px,py,s,2);ctx.fillRect(px,py,2,s);});
+  centered("GET READY!",230,C.amber,12,true);
+  const pulse=0.85+0.15*Math.sin(Date.now()*0.012);
+  ctx.font=`${Math.round(80*pulse)}px ${PX}`; const numStr=`${countdownValue}`,nw=ctx.measureText(numStr).width;
+  ctx.shadowColor=C.amber; ctx.shadowBlur=30*pulse; ctx.fillStyle=C.amber;
+  ctx.fillText(numStr,W/2-nw/2,390); ctx.shadowBlur=0;
+  ctx.font=`8px ${PX}`; const dw=ctx.measureText("MIXED MODE").width;
+  pxDraw("MIXED MODE",W/2-dw/2,436,C.purple,8,true);
+  centered("GET READY TO TYPE!",462,"#6677aa",7,false);
+}
+
 // ── MAIN LOOP ─────────────────────────────────────────────────────────────────
 function loop(){
   bg();
@@ -2620,6 +2821,11 @@ function loop(){
   else if(state==="gameover_multi") gameover_multi();
 
   if(state!=="splash") drawMusicIcon();
+
+  // Global countdown overlay — fires even if player navigated to menu
+  if(countdownActive && state!=="game" && state!=="lobby_wait" && lobby.role){
+    drawGlobalCountdownOverlay();
+  }
 
   if(state!==lastState&&audioReady){
     if(["menu","difficulty","multiplayer","hostjoin","joingame","options","lobby_wait","howtoplay"].includes(state)) startBGM("menu");
