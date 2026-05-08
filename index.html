@@ -2595,7 +2595,7 @@ function loop(){
   else if(state==="gameover")       gameover();
   else if(state==="gameover_multi") gameover_multi();
 
-  drawMusicIcon();
+  if(state!=="splash") drawMusicIcon();
 
   if(state!==lastState&&audioReady){
     if(["menu","difficulty","multiplayer","hostjoin","joingame","options","lobby_wait","howtoplay"].includes(state)) startBGM("menu");
