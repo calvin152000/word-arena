@@ -1669,6 +1669,9 @@ document.addEventListener("keydown",(e)=>{
     else if(e.key==="Enter") singleSubmit();
     else if(/^[a-zA-Z]$/.test(e.key)){singleTyped+=e.key.toUpperCase();singleTotalKeys++;sfxType();}
   } else {
+    // Block all input if local player is dead (spectator mode)
+    const p=players[localPlayerIdx];
+    if(!p||p.dead) return;
     if(e.key==="Escape"){
       multiForfeitConfirm=!multiForfeitConfirm;
       if(multiForfeitConfirm) bgmGain.gain.linearRampToValueAtTime(0,audioCtx.currentTime+0.15);
@@ -1676,8 +1679,6 @@ document.addEventListener("keydown",(e)=>{
       sfxClick();return;
     }
     if(multiForfeitConfirm) return;
-    const p=players[localPlayerIdx];
-    if(!p||p.dead) return;
     if(e.key==="Backspace") p.typed=p.typed.slice(0,-1);
     else if(e.key==="Enter") multiSubmit(p);
     else if(/^[a-zA-Z]$/.test(e.key)){p.typed+=e.key.toUpperCase();sfxType();}
@@ -2611,33 +2612,111 @@ function applyLobbyNameChange(val){
 
 // ── GAME OVER SCREENS ─────────────────────────────────────────────────────────
 function gameover_multi(){
-  ctx.fillStyle="rgba(0,0,0,0.75)"; ctx.fillRect(0,0,W,H);
-  ctx.fillStyle="#05050f"; ctx.fillRect(60,160,480,420);
-  ctx.strokeStyle=C.purple; ctx.shadowColor=C.purple; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(60,160,480,420); ctx.shadowBlur=0;
-  ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(62,162,476,22);
   const sorted=[...players].sort((a,b)=>b.score-a.score);
-  // Winner = lastStanding (survived longest) OR top scorer if everyone died simultaneously
   const winner = lastStanding || sorted[0] || null;
-  if(winner){
-    centered("WINNER!",210,C.green,20,true);
-    ctx.font=`14px ${PX}`; const nw=ctx.measureText(winner.name).width;
-    pxDraw(winner.name,W/2-nw/2,248,winner.color,14,true);
-  } else { centered("GAME OVER",220,C.red,22,true); }
-  ctx.fillStyle=C.dim; ctx.fillRect(80,262,440,1);
-  sorted.forEach((p,i)=>{
-    const y=285+i*52,rankClr=i===0?C.amber:i===1?"#aaaacc":i===2?"#cc8833":C.dim+"ff";
-    ctx.font=`8px ${PX}`;
-    pxDraw(`${i+1}.`,100,y,rankClr,8,i===0); pxDraw(p.name,130,y,p.color,8,false);
-    const sc=`${p.score} pts`; const sw=ctx.measureText(sc).width;
-    pxDraw(sc,500-sw,y,i===0?C.amber:C.teal,8,i===0);
+  const me = players[localPlayerIdx];
+  const iWon = winner && me && winner === me;
+  const iLost = !iWon;
+
+  // Background overlay
+  ctx.fillStyle="rgba(0,0,0,0.80)"; ctx.fillRect(0,0,W,H);
+
+  // Main card — color-coded green for win, red for loss
+  const cardClr = iWon ? C.green : C.red;
+  ctx.fillStyle="#05050f"; ctx.fillRect(50,80,500,500);
+  ctx.strokeStyle=cardClr; ctx.shadowColor=cardClr; ctx.shadowBlur=24; ctx.lineWidth=2;
+  ctx.strokeRect(50,80,500,500); ctx.shadowBlur=0;
+  // Corner accents
+  const cs=10; ctx.fillStyle=cardClr;
+  [[50,80],[546,80],[50,576],[546,576]].forEach(([px,py])=>{
+    ctx.fillRect(px,py,cs,2);ctx.fillRect(px,py,2,cs);
   });
-  ctx.fillStyle=C.dim; ctx.fillRect(80,500,440,1);
-  const gmPlayHov=(lastMouseX>60&&lastMouseX<290&&lastMouseY>510&&lastMouseY<558);
-  const gmMenuHov=(lastMouseX>310&&lastMouseX<540&&lastMouseY>510&&lastMouseY<558);
-  pixelBox({text:"PLAY AGAIN",x:60,y:510,w:230,h:48},gmPlayHov?C.green:C.teal);
-  pixelBox({text:"MENU",x:310,y:510,w:230,h:48},gmMenuHov?C.amber:C.purple);
+  // Header band
+  ctx.fillStyle=`rgba(${hexRgb(cardClr)},0.18)`; ctx.fillRect(52,82,496,34);
+
+  // ── Personal result banner ──────────────────────────────────────────────────
+  if(iWon){
+    // Pulsing gold glow for winner
+    const pulse=0.7+0.3*Math.sin(Date.now()*0.006);
+    ctx.shadowColor=C.amber; ctx.shadowBlur=20*pulse;
+    centered("★  YOU WIN!  ★",136,C.amber,20,true);
+    ctx.shadowBlur=0;
+    ctx.font=`8px ${PX}`; const sub="Congratulations!"; const sw=ctx.measureText(sub).width;
+    ctx.fillStyle=C.green; ctx.fillText(sub,W/2-sw/2,162);
+  } else {
+    centered("YOU LOSE",132,C.red,20,true);
+    // Show who won
+    if(winner){
+      ctx.font=`8px ${PX}`; const wl=`Winner: ${winner.name}`; const wlw=ctx.measureText(wl).width;
+      ctx.shadowColor=winner.color; ctx.shadowBlur=6; ctx.fillStyle=winner.color;
+      ctx.fillText(wl,W/2-wlw/2,160); ctx.shadowBlur=0;
+    }
+  }
+
+  // ── Divider ─────────────────────────────────────────────────────────────────
+  ctx.fillStyle=`rgba(${hexRgb(cardClr)},0.35)`; ctx.fillRect(70,174,460,1);
+
+  // ── Leaderboard ─────────────────────────────────────────────────────────────
+  sorted.forEach((p,i)=>{
+    const y=200+i*62;
+    const isMe = p===me;
+    const rankClr=i===0?C.amber:i===1?"#aaaacc":i===2?"#cc8833":"#556677";
+
+    // Row background — highlight local player's row
+    if(isMe){
+      ctx.fillStyle=`rgba(${hexRgb(cardClr)},0.10)`; ctx.fillRect(68,y-18,464,48);
+      ctx.strokeStyle=`rgba(${hexRgb(cardClr)},0.4)`; ctx.lineWidth=1; ctx.strokeRect(68,y-18,464,48);
+    }
+
+    ctx.font=`9px ${PX}`;
+    // Rank number
+    ctx.shadowColor=rankClr; ctx.shadowBlur=i===0?8:0;
+    ctx.fillStyle=rankClr; ctx.fillText(`${i+1}.`,82,y+8); ctx.shadowBlur=0;
+
+    // Crown for #1
+    if(i===0){ ctx.font=`10px ${PX}`; ctx.fillStyle=C.amber; ctx.fillText("♛",100,y+8); }
+
+    // Name with YOU tag
+    ctx.font=`9px ${PX}`;
+    const nameStr = isMe ? `${p.name} (YOU)` : p.name;
+    ctx.shadowColor=p.color; ctx.shadowBlur=isMe?8:4;
+    ctx.fillStyle=p.color; ctx.fillText(nameStr,124,y+8); ctx.shadowBlur=0;
+
+    // Score
+    const sc=`${p.score} pts`; const scw=ctx.measureText(sc).width;
+    ctx.fillStyle=i===0?C.amber:C.teal; ctx.fillText(sc,510-scw,y+8);
+
+    // Eliminated badge for non-winners
+    if(p.dead && p!==winner){
+      ctx.font=`6px ${PX}`; const el="✗ OUT"; const elw=ctx.measureText(el).width;
+      ctx.fillStyle="#553344"; ctx.fillRect(510-scw-elw-20,y-2,elw+10,16);
+      ctx.strokeStyle="#774455"; ctx.lineWidth=1; ctx.strokeRect(510-scw-elw-20,y-2,elw+10,16);
+      ctx.fillStyle="#aa5566"; ctx.fillText(el,510-scw-elw-14,y+9);
+    }
+  });
+
+  // ── Divider ─────────────────────────────────────────────────────────────────
+  ctx.fillStyle=C.dim; ctx.fillRect(70,456,460,1);
+
+  // ── Rematch timer ───────────────────────────────────────────────────────────
+  if(myRematchVote===null){
+    const timerClr=rematchTimeLeft<=5?C.red:rematchTimeLeft<=10?C.amber:"#445566";
+    ctx.font=`7px ${PX}`; const tl=`Auto-menu in ${rematchTimeLeft}s`; const tlw=ctx.measureText(tl).width;
+    ctx.fillStyle=timerClr; ctx.fillText(tl,W/2-tlw/2,473);
+  } else {
+    ctx.font=`7px ${PX}`; const vl="Waiting..."; const vlw=ctx.measureText(vl).width;
+    ctx.fillStyle="#445566"; ctx.fillText(vl,W/2-vlw/2,473);
+  }
+
+  // ── Action buttons ──────────────────────────────────────────────────────────
+  const gmPlayHov=(lastMouseX>50&&lastMouseX<280&&lastMouseY>482&&lastMouseY<530);
+  const gmMenuHov=(lastMouseX>320&&lastMouseX<550&&lastMouseY>482&&lastMouseY<530);
+  const playClr = myRematchVote===true?"#334433":gmPlayHov?C.green:C.teal;
+  const menuClr = myRematchVote===false?"#333344":gmMenuHov?C.amber:C.purple;
+  pixelBox({text:myRematchVote===true?"✓ QUEUED":"PLAY AGAIN",x:50,y:482,w:230,h:48},playClr);
+  pixelBox({text:myRematchVote===false?"✓ LEAVING":"MENU",x:320,y:482,w:230,h:48},menuClr);
   ctx.font=`7px ${PX}`; const hint="Play Again returns to lobby";
-  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,574);
+  const hw=ctx.measureText(hint).width; ctx.fillStyle="#2a3a55"; ctx.fillText(hint,W/2-hw/2,542);
 }
 
 function gameover(){
