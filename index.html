@@ -124,10 +124,179 @@ function applyTheme(idx){
 
 // ── WORD DATA ─────────────────────────────────────────────────────────────────
 const WORDS = {
-  easy:      ["CAT","DOG","SUN","BAT","HAT","MAP","CUP","RUN","FLY","SKY","BOX","FOX","PIG","BIG","JOY","KEY","LOG","MUD","NET","OAK","PAN","RAT","SAP","TIP","VAN","WAX","YAM","ZAP","BEE","EGG"],
-  medium:    ["CODE","JAVA","NODE","GAME","HTML","LOOP","BYTE","DATA","FILE","FORM","GRID","HEAP","ICON","JSON","KERN","LINK","MODE","NULL","OPEN","PIPE","QUIT","READ","SORT","TYPE","USER","VIEW","WIKI","EXEC","FORK","GRAB"],
-  hard:      ["STACK","ARRAY","OBJECT","ENGINE","SCRIPT","PARSE","PIXEL","QUERY","REGEX","ROUTE","SCOPE","TOKEN","UNION","VALUE","YIELD","CACHE","DEBUG","ERROR","FETCH","GRANT","INDEX","MERGE","PATCH","PIVOT","PROXY","QUEUE","REACT","SLICE","STATE","STORE"],
-  difficult: ["ALGORITHM","POLYMORPHISM","ENCAPSULATION","COMPUTATION","ABSTRACTION","INHERITANCE","RECURSION","MIDDLEWARE","ASYNCHRONOUS","COMPILATION","CONCURRENCY","DISTRIBUTED","ENCRYPTION","FILESYSTEM","GENERALIZATION","HEXADECIMAL","INTERPOLATION","JAVASCRIPT","KUBERNETES","LOGARITHMIC","MANIPULATION","NORMALIZATION","OPTIMIZATION","PARALLELISM","QUANTIZATION","REFACTORING","SERIALIZATION","TRANSACTIONAL","VIRTUALIZATION","WAVELENGTH"],
+  easy: [
+    "CAT","DOG","SUN","BAT","HAT","MAP","CUP","RUN","FLY","SKY","BOX","FOX","PIG","BIG","JOY",
+    "KEY","LOG","MUD","NET","OAK","PAN","RAT","SAP","TIP","VAN","WAX","YAM","ZAP","BEE","EGG",
+    "ACE","AGE","AID","AIM","AIR","ANT","APE","ARM","ART","ASH","ASK","ATE","AXE","BAG","BAN",
+    "BAR","BED","BIT","BOW","BUD","BUG","BUN","BUS","BUT","BUY","CAB","CAN","CAP","CAR","COB",
+    "COD","COG","COT","COW","CRY","CUB","DAD","DAM","DEN","DEW","DID","DIG","DIM","DIP","DOT",
+    "DRY","DUB","DUG","DUO","DYE","EAR","EAT","EEL","ELK","ELM","EMU","END","ERA","EVE","EWE",
+    "FAD","FAN","FAR","FAT","FAX","FED","FEW","FIG","FIN","FIT","FIX","FLU","FOG","FUN","FUR",
+    "GAP","GAS","GAY","GEL","GEM","GET","GOD","GOT","GUN","GUY","GYM","HAG","HAM","HAS","HEN",
+    "HEW","HID","HIM","HIP","HIT","HOB","HOG","HOP","HOT","HOW","HUB","HUG","HUM","HUT","ICE",
+    "INN","ION","IRE","IVY","JAB","JAM","JAR","JAW","JET","JIG","JOB","JOG","JOT","JUG","LAB",
+    "LAD","LAP","LAW","LAX","LAY","LEG","LET","LID","LIP","LIT","LOB","LOT","LOW","LUG","MAD",
+    "MAN","MAR","MAT","MAW","MOB","MOD","MOM","MOP","MOW","NAB","NAG","NAP","NIB","NIT","NOB",
+    "NOD","NOR","NOT","NOB","NUN","NUT","OAF","OAR","OAT","ODD","ODE","OFF","OFT","OPT","ORB",
+    "ORE","OWE","OWL","OWN","PAD","PAL","PAW","PAY","PEA","PEG","PEN","PET","PEW","PIN","PIT",
+    "PLY","POD","POP","POT","POW","PRY","PUB","PUN","PUP","PUS","PUT","RAG","RAM","RAN","RAP",
+    "RAW","RAY","RED","REF","RIB","RID","RIG","RIM","RIP","ROB","ROD","ROT","ROW","RUB","RUG",
+    "SAC","SAD","SAG","SAT","SAW","SAY","SET","SEW","SIP","SIT","SIX","SKI","SOB","SOD","SON",
+    "SOT","SOW","SOY","SPA","SPY","STY","SUB","SUE","SUP","TAB","TAD","TAN","TAP","TAR","TAX",
+    "TIN","TOD","TON","TOO","TOP","TOW","TOY","TUB","TUG","TWO","URN","USE","VEX","VIA","VIM",
+    "VOW","WAD","WAR","WAS","WEB","WED","WET","WHO","WIG","WIN","WIT","WOE","WOK","WON","WOO",
+    "WOP","WOW","YAK","YEN","YEP","YET","YEW","YOU","ZIT","ZOO"
+  ],
+  medium: [
+    "CODE","JAVA","NODE","GAME","HTML","LOOP","BYTE","DATA","FILE","FORM","GRID","HEAP","ICON",
+    "JSON","KERN","LINK","MODE","NULL","OPEN","PIPE","QUIT","READ","SORT","TYPE","USER","VIEW",
+    "WIKI","EXEC","FORK","GRAB","ABLE","ACID","AGED","ALSO","ARCH","AREA","ARMY","AUTO","BACK",
+    "BAIL","BAIT","BAKE","BALD","BALL","BAND","BANG","BANK","BASE","BASH","BEAM","BEAN","BEAR",
+    "BEAT","BEEF","BEEN","BEER","BELL","BELT","BEND","BIKE","BILL","BIND","BIRD","BITE","BLED",
+    "BLEW","BLOW","BLUE","BLUR","BOIL","BOLD","BOLT","BOMB","BOND","BONE","BOOK","BOOT","BORE",
+    "BORN","BOSS","BOTH","BUCK","BUFF","BULK","BULL","BURN","CAGE","CAKE","CALL","CALM","CAME",
+    "CAMP","CARD","CARE","CAST","CAVE","CELL","CHAD","CLAM","CLAN","CLAP","CLAY","CLIP","CLUB",
+    "CLUE","COAL","COAT","COIL","COIN","COLD","COMB","COME","COOK","COOL","COPE","COPY","CORD",
+    "CORE","CORN","COST","COUP","CRAM","CREW","CROP","CROW","CUBE","CURL","DAMP","DARK","DASH",
+    "DAWN","DEAL","DEAN","DECK","DEEP","DEER","DEMO","DENY","DESK","DIAL","DIET","DIRT","DISK",
+    "DIVA","DOCK","DOES","DOME","DONE","DOOR","DOSE","DOTE","DOWN","DRAG","DRAW","DREW","DRIP",
+    "DROP","DRUG","DRUM","DUAL","DULL","DUMB","DUMP","DUSK","DUST","EACH","EARL","EARN","EASE",
+    "EAST","EDGE","EMIT","EPIC","EVER","EXAM","FAIL","FAIR","FAKE","FALL","FAME","FARM","FAST",
+    "FATE","FEED","FEEL","FELL","FELT","FERN","FILL","FILM","FIND","FINE","FISH","FIST","FIVE",
+    "FLAG","FLAT","FLAW","FLED","FLEW","FLEX","FLIP","FLOW","FOAM","FOLD","FOLK","FONT","FOOT",
+    "FORE","FORT","FOUL","FOUR","FREE","FROG","FROM","FUEL","FULL","FUME","FUSE","GALE","GAVE",
+    "GAZE","GEAR","GIFT","GIRL","GIVE","GLAD","GLOW","GLUE","GOAL","GOAT","GOLD","GONE","GOOD",
+    "GOWN","GRAB","GRAY","GREW","GRIN","GRIP","GROW","GULF","GUST","GUTS","HACK","HAIL","HAIR",
+    "HALF","HALL","HALT","HAND","HANG","HARD","HARM","HARP","HAVE","HEAD","HEAL","HEAP","HEAT",
+    "HELD","HELP","HERE","HERO","HIGH","HIKE","HILL","HINT","HIRE","HOLE","HOME","HOOK","HOPE",
+    "HORN","HOSE","HOST","HOUR","HYPE","IDEA","IDLE","INCH","INTO","IRON","ITEM","JUMP","JUST",
+    "KEEN","KEEP","KILL","KIND","KING","KISS","KNIT","KNOW","LACK","LAID","LAKE","LAMP","LAND",
+    "LANE","LAST","LATE","LAWN","LEAD","LEAN","LEAP","LEFT","LEND","LENS","LESS","LIED","LIFE",
+    "LIFT","LIKE","LINE","LIST","LIVE","LOAD","LOCK","LONE","LONG","LOOK","LORD","LORE","LOSE",
+    "LOSS","LOST","LOUD","LOVE","LUCK","LURE","LUSH","MADE","MAIL","MAIN","MAKE","MALE","MALL",
+    "MANE","MANY","MARK","MARS","MAST","MEAL","MEAN","MEAT","MEET","MELT","MEMO","MESS","MILE",
+    "MILK","MILL","MIND","MINE","MINT","MISS","MIST","MOAT","MOCK","MOLE","MORE","MOST","MOVE",
+    "MUCH","MUSE","NAIL","NAME","NEAR","NECK","NEED","NEWS","NEXT","NICE","NINE","NONE","NOON",
+    "NORM","NOSE","NOTE","NOUN","NUMB","OATH","ODDS","OKAY","ONCE","ONLY","OOZE","PACK","PAGE",
+    "PAID","PALE","PALM","PART","PAST","PATH","PEAK","PEEL","PEER","PICK","PILE","PINE","PLAN",
+    "PLAY","PLEA","PLOT","PLOW","PLUG","PLUM","PLUS","POEM","POET","POLE","POLL","POOL","POOR",
+    "PORT","POSE","POST","POUR","PREY","PROP","PULL","PUMP","PURE","PUSH","RACE","RAGE","RAID",
+    "RAIL","RAIN","RAKE","RAMP","RANG","RANK","RAVE","RAYS","REAL","REAP","REAR","REEL","REIN",
+    "RELY","RENT","RICE","RICH","RIDE","RING","RISE","RISK","ROAM","ROAR","ROCK","ROLE","ROLL",
+    "ROOF","ROOM","ROOT","ROPE","ROSE","RUIN","RULE","RUSH","RUST","SAFE","SAGE","SAIL","SAKE",
+    "SALE","SALT","SAND","SANE","SANG","SANK","SAVE","SCAN","SCAR","SEAL","SEAM","SEAT","SEED",
+    "SEEK","SEEM","SEEN","SELF","SELL","SEND","SENT","SHED","SHIP","SHOE","SHOP","SHOT","SHOW",
+    "SHUT","SICK","SIDE","SIGH","SIGN","SILK","SING","SINK","SIZE","SKIN","SKIP","SLAB","SLAM",
+    "SLAP","SLED","SLEW","SLIM","SLIP","SLOT","SLOW","SLUG","SMOG","SNAP","SNOW","SOAK","SOAP",
+    "SOAR","SOCK","SOIL","SOLD","SOLE","SOME","SONG","SOON","SORE","SOUL","SOUP","SPAN","SPAR",
+    "SPIT","SPOT","SPUN","SPUR","STAR","STAY","STEM","STEP","STEW","STIR","STOP","STUB","STUN",
+    "SUCH","SUIT","SUNG","SUNK","SURF","SWAP","SWAM","SWAT","SWAY","SWIM","TAIL","TAKE","TALE",
+    "TALK","TALL","TAME","TANG","TANK","TART","TASK","TAUT","TAXI","TEAM","TEAR","TEAT","TELL",
+    "TEND","TENS","TENT","TERM","TEST","THAN","THAT","THEM","THEN","THEY","THIN","THIS","THUD",
+    "TIDE","TIER","TILE","TIME","TINY","TIRE","TOAD","TOLD","TOLL","TOMB","TOME","TONE","TOOL",
+    "TORN","TORT","TOSS","TOUR","TRAM","TRAP","TRAY","TREE","TRIM","TRIO","TRIP","TRUE","TUBE",
+    "TUFT","TUNA","TUNE","TURF","TURN","TWIN","UPON","URGE","VAIN","VALE","VANE","VARY","VAST",
+    "VEIL","VEIN","VENT","VERB","VEST","VINE","VOID","VOTE","WADE","WAGE","WAKE","WALK","WALL",
+    "WAND","WARD","WARM","WARN","WARP","WARY","WASH","WASP","WAVE","WEAR","WEED","WEEK","WELL",
+    "WENT","WERE","WHAT","WHEN","WHIP","WICK","WIDE","WILD","WILL","WILT","WIND","WINE","WING",
+    "WINK","WIRE","WISE","WISH","WITH","WOKE","WOLF","WOOD","WOOL","WORD","WORE","WORK","WORM",
+    "WRAP","WREN","WRIT","YARN","YAWN","YEAR","YELL","YOGA","YORE","YOUR","ZERO","ZONE","ZOOM"
+  ],
+  hard: [
+    "STACK","ARRAY","OBJECT","ENGINE","SCRIPT","PARSE","PIXEL","QUERY","REGEX","ROUTE","SCOPE",
+    "TOKEN","UNION","VALUE","YIELD","CACHE","DEBUG","ERROR","FETCH","GRANT","INDEX","MERGE",
+    "PATCH","PIVOT","PROXY","QUEUE","REACT","SLICE","STATE","STORE","ABUSE","ADAPT","ADMIT",
+    "ADOPT","ADULT","AGENT","AGILE","AGREE","AHEAD","ALARM","ALBUM","ALERT","ALGAE","ALIEN",
+    "ALIGN","ALIVE","ALLEY","ALLOT","ALLOW","ALLOY","ALONE","ALONG","AMAZE","AMEND","AMPLE",
+    "ANGEL","ANGRY","ANIME","ANNEX","ANTIC","ANVIL","AORTA","APART","APPLE","APPLY","APTLY",
+    "ARENA","ARISE","ARMOR","AROMA","AROSE","ATLAS","ATONE","ATTIC","AUDIT","AUNTY","AVAIL",
+    "AVOID","AWAKE","AWARD","AWARE","AWFUL","BADLY","BAGEL","BASIS","BEACH","BEING","BELLE",
+    "BENCH","BIBLE","BISON","BLACK","BLADE","BLAME","BLAND","BLANK","BLAST","BLAZE","BLEED",
+    "BLESS","BLIND","BLINK","BLISS","BLOCK","BLOOD","BLOOM","BOARD","BOAST","BONUS","BOOTH",
+    "BRAID","BRAIN","BRAND","BRAVE","BREAD","BREAK","BREED","BRIBE","BRICK","BRIDE","BRIEF",
+    "BRINE","BRING","BRISK","BROAD","BROKE","BROOK","BROWN","BRUSH","BUDDY","BUILT","BUNCH",
+    "BURST","BUYER","CAROL","CARRY","CATCH","CAUSE","CEASE","CHAIR","CHALK","CHAOS","CHARM",
+    "CHART","CHASE","CHECK","CHEEK","CHEER","CHEST","CHIEF","CHILL","CHINA","CHOIR","CHORD",
+    "CHUNK","CIRCA","CIVIC","CIVIL","CLAIM","CLASH","CLASS","CLEAN","CLEAR","CLERK","CLICK",
+    "CLIMB","CLING","CLOCK","CLONE","CLOSE","CLOTH","CLOUD","COACH","COAST","COMET","COMIC",
+    "COMMA","COUNT","COUPE","COURT","COVER","CRACK","CRAFT","CRASH","CRAZY","CREAM","CREEK",
+    "CRIME","CRISP","CROSS","CROWD","CROWN","CRUSH","CRUST","CRUEL","CURVE","CYCLE","DAILY",
+    "DANCE","DEALT","DEATH","DEBUT","DECAY","DECOY","DELAY","DELTA","DENSE","DEPOT","DEPTH",
+    "DEVIL","DITTO","DIZZY","DODGE","DOING","DOWRY","DRAFT","DRAIN","DRAKE","DRAWL","DREAM",
+    "DRESS","DRIFT","DRINK","DRIVE","DROWN","DWARF","DYING","EAGLE","EARLY","EARTH","EIGHT",
+    "ELITE","EMPTY","ENEMY","ENJOY","ENTER","ENTRY","ENVOY","EQUAL","EQUIP","ESSAY","EVENT",
+    "EVERY","EVICT","EXACT","EXTRA","FABLE","FACED","FAITH","FANCY","FEAST","FENCE","FEVER",
+    "FIBER","FIELD","FIFTH","FIFTY","FIGHT","FINCH","FIRST","FIXED","FJORD","FLAKY","FLAME",
+    "FLARE","FLASH","FLASK","FLEET","FLESH","FLOCK","FLOOD","FLOOR","FLOUR","FLUTE","FORCE",
+    "FORGE","FOUND","FRAME","FRANK","FRAUD","FREED","FRESH","FROWN","FROZE","FRONT","FROST",
+    "FRUIT","FULLY","FUNNY","GAVEL","GAUGE","GIANT","GIVEN","GLAND","GLARE","GLASS","GLEAM",
+    "GLEAN","GLIDE","GLOBE","GLOOM","GLOSS","GORGE","GOUGE","GRACE","GRADE","GRAIL","GRAIN",
+    "GRAND","GRASP","GRASS","GRATE","GRAVE","GRAZE","GREAT","GREEN","GREET","GRIEF","GRIND",
+    "GROAN","GROIN","GROPE","GROSS","GROUP","GROUT","GROVE","GRUEL","GRUNT","GUILE","GUISE",
+    "GULCH","GULLY","HUMAN","HUMOR","HUNTS","HURRY","HYMN","IDEAL","IMAGE","IMPLY","INBOX",
+    "INNER","INPUT","INTER","INTRO","ISSUE","JOINT","JUDGE","JUICE","JUICY","KABOB","KARMA",
+    "KITTY","KNACK","KNEEL","KNIFE","KNOCK","LABEL","LANCE","LAPSE","LARGE","LASER","LATER",
+    "LAUGH","LAYER","LEARN","LEASE","LEAST","LEGAL","LEVEL","LIGHT","LIMIT","LINER","LIVER",
+    "LIVID","LOCAL","LODGE","LOGIC","LOOSE","LOWER","LOWLY","LUCID","LUNCH","LYING","MAGIC",
+    "MAJOR","MAKER","MANOR","MAPLE","MATCH","MAYBE","MAYOR","MELEE","MERCY","MERGE","MERIT",
+    "MIGHT","MODEL","MONEY","MONTH","MORAL","MOTTO","MOURN","MOUSE","MOUTH","MOVIE","MUSIC",
+    "NAIVE","NAVEL","NIGHT","NOBLE","NOISE","NORTH","NOTCH","NOVEL","NURSE","NYMPH","OFFER",
+    "OFTEN","ONSET","ORDER","OTHER","OUTER","OWNED","OWNER","OXIDE","OZONE","PAINT","PANTY",
+    "PAPYRUS","PARTY","PAUSE","PEACE","PEARL","PENAL","PETAL","PHASE","PHOTO","PIANO","PIECE",
+    "PILOT","PITCH","PLACE","PLAIN","PLANE","PLANT","PLATE","PLAZA","PLUMB","POINT","POLAR",
+    "POUND","POWER","PRESS","PRICE","PRIDE","PRINT","PRIOR","PRIZE","PROBE","PROOF","PROSE",
+    "PROUD","PROVE","PROWL","PRUDE","PULSE","PURSE","QUAKE","QUALM","QUEEN","QUEST","QUICK",
+    "QUIET","QUITE","QUOTA","QUOTE","RADAR","RADIO","RAISE","RALLY","RANGE","RAPID","RATIO",
+    "REACH","REALM","REBEL","REIGN","RELAX","REPAY","RESET","RIDER","RIGHT","RISKY","RIVAL",
+    "RIVER","ROUGH","ROUND","ROYAL","RULER","RURAL","SADLY","SAUCE","SCALE","SCENE","SCORE",
+    "SCOUT","SEDAN","SENSE","SERVE","SETUP","SEVEN","SEWN","SHADE","SHAFT","SHAKE","SHALL",
+    "SHAME","SHAPE","SHARE","SHARP","SHELF","SHELL","SHIFT","SHINE","SHIRT","SHORT","SIGHT",
+    "SINCE","SIXTH","SIXTY","SKILL","SKULL","SLEEK","SLEEP","SLEET","SLICE","SLIDE","SLOPE",
+    "SMALL","SMART","SMELL","SMILE","SMOKE","SMASH","SNACK","SNAKE","SNARE","SNIFF","SOLID",
+    "SOLVE","SOUTH","SPACE","SPEAK","SPECK","SPEED","SPELL","SPEND","SPICE","SPILL","SPINE",
+    "SPOKE","SPOON","SPRAY","SQUAD","SQUAT","SQUID","STAFF","STAGE","STAIN","STALE","STALL",
+    "STAND","STARE","STARK","START","STEAM","STEEL","STEEP","STEER","STERN","STICK","STIFF",
+    "STILL","STOCK","STOMP","STONE","STOOD","STORK","STORM","STORY","STRAP","STRAW","STRAY",
+    "STRIP","STRUM","STUNT","STYLE","SUGAR","SUNNY","SUPER","SURGE","SWAMP","SWEEP","SWEET",
+    "SWIFT","SWIRL","SWOOP","SWORD","TABLE","TASTE","TEACH","TEASE","THANK","THICK","THING",
+    "THINK","THORN","THOSE","THREE","THREW","THROW","THUMB","TIGER","TIGHT","TIMER","TITLE",
+    "TOAST","TODAY","TOTAL","TOUCH","TOUGH","TOXIC","TRACE","TRACK","TRADE","TRAIL","TRAIN",
+    "TRAIT","TRICK","TROOP","TROUT","TRUCE","TRUCK","TRULY","TRUMP","TRUNK","TRUST","TRUTH",
+    "TULIP","TUMOR","UPSET","USHER","USUAL","UTTER","VAGUE","VALID","VALOR","VALUE","VALVE",
+    "VERSE","VIGOR","VIRAL","VIRUS","VISIT","VISOR","VISTA","VITAL","VOCAL","VOICE","WAIST",
+    "WASTE","WATCH","WATER","WEAVE","WEDGE","WEIGH","WEIRD","WHALE","WHEAT","WHEEL","WHERE",
+    "WHILE","WHITE","WHOLE","WHOSE","WIDER","WITCH","WOMAN","WORLD","WORRY","WORST","WORTH",
+    "WOULD","WOUND","WRATH","WRITE","WROTE","YOUNG","YOUTH"
+  ],
+  difficult: [
+    "ALGORITHM","POLYMORPHISM","ENCAPSULATION","COMPUTATION","ABSTRACTION","INHERITANCE",
+    "RECURSION","MIDDLEWARE","ASYNCHRONOUS","COMPILATION","CONCURRENCY","DISTRIBUTED",
+    "ENCRYPTION","FILESYSTEM","GENERALIZATION","HEXADECIMAL","INTERPOLATION","JAVASCRIPT",
+    "KUBERNETES","LOGARITHMIC","MANIPULATION","NORMALIZATION","OPTIMIZATION","PARALLELISM",
+    "QUANTIZATION","REFACTORING","SERIALIZATION","TRANSACTIONAL","VIRTUALIZATION","WAVELENGTH",
+    "ACCELERATION","ACCESSIBILITY","ACCUMULATION","ACHIEVEMENT","ACKNOWLEDGMENT","ACQUISITION",
+    "ADMINISTRATION","ADVERTISEMENT","AFFIRMATION","AGGREGATION","AMPLIFICATION","ANTICIPATION",
+    "APPROXIMATION","ARCHITECTURE","AUTHENTICATION","AUTHORIZATION","AUTOMATION","BIFURCATION",
+    "BROADCASTING","BUREAUCRATIC","CALIBRATION","CATEGORIZATION","CENTRALIZATION","CERTIFICATION",
+    "CHARACTERIZATION","CLARIFICATION","CLASSIFICATION","COLLABORATION","COMMUNICATION",
+    "COMPATIBILITY","COMPENSATION","COMPREHENSION","CONFIGURATION","CONFRONTATION","CONSERVATION",
+    "CONSIDERATION","CONSOLIDATION","CONTAINERIZATION","CONTINUATION","CONTRADICTION","CONTRIBUTION",
+    "CONVERSATION","CRYPTOGRAPHY","CUSTOMIZATION","DECOMPOSITION","DECENTRALIZATION","DECLARATION",
+    "DEMONSTRATION","DEPENDENCY","DEPLOYMENT","DEPRECATION","DESERIALIZATION","DETERMINATION",
+    "DIFFERENTIATION","DISAMBIGUATION","DOCUMENTATION","DUPLICATION","ELABORATION","ELIMINATION",
+    "ENCAPSULATION","ENUMERATION","EQUILIBRATION","ESTABLISHMENT","ESTIMATION","EVALUATION",
+    "EXAMINATION","EXECUTION","EXPERIMENTATION","EXPLOITATION","EXTRAPOLATION","FACILITATION",
+    "FORMALIZATION","FRAGMENTATION","FUNCTIONALITY","GENERALIZATION","GLOBALIZATION","HARMONIZATION",
+    "IDENTIFICATION","IMMUTABILITY","IMPLEMENTATION","INITIALIZATION","INSTRUMENTATION","INTEGRATION",
+    "INTERPRETATION","INVESTIGATION","MARGINALIZATION","MEASUREMENT","MEMORIZATION","MICROSERVICES",
+    "MIGRATION","MINIMIZATION","MODULARIZATION","MONETIZATION","MULTIPLICATION","NORMALIZATION",
+    "NOTIFICATION","OBSERVABILITY","ORCHESTRATION","PARAMETERIZATION","PERIODIZATION","PERSISTENCE",
+    "PRIORITIZATION","PROBABILISTIC","PROCESSING","PROJECTION","PROPAGATION","RECONCILIATION",
+    "REFACTORING","REPRESENTATION","RESILIENCE","RESOLUTION","RESPONSIBILITY","SCALABILITY",
+    "SEGMENTATION","SIMPLIFICATION","SPECIFICATION","STANDARDIZATION","SYNCHRONIZATION",
+    "SYSTEMIZATION","TOKENIZATION","TRANSFORMATION","TROUBLESHOOTING","UNDERUTILIZATION",
+    "UNIFICATION","UTILIZATION","VALIDATION","VISUALIZATION","VULNERABILITY","WORKSTATION"
+  ],
 };
 const DIFF_CFG = {
   easy:     { baseSpeed:1.8, rand:0.6, pts:5,  spawnBase:140 },
@@ -135,6 +304,33 @@ const DIFF_CFG = {
   hard:     { baseSpeed:3.2, rand:1.1, pts:15, spawnBase:95  },
   difficult:{ baseSpeed:4.2, rand:1.5, pts:25, spawnBase:75  },
 };
+
+// ── NO-REPEAT WORD POOL ───────────────────────────────────────────────────────
+// Shuffle an array using Fisher-Yates
+function shuffleArr(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+// Per-difficulty shuffled queues + used sets
+const wordQueues={};
+const wordUsed={};
+function initWordPool(diff){
+  wordQueues[diff]=shuffleArr(WORDS[diff]||WORDS.easy);
+  wordUsed[diff]=new Set();
+}
+// Draw next unique word from pool; recycles when exhausted
+function drawWord(diff){
+  if(!wordQueues[diff]||wordQueues[diff].length===0){
+    // Re-shuffle and reset used set when pool runs out
+    wordQueues[diff]=shuffleArr(WORDS[diff]||WORDS.easy);
+    wordUsed[diff]=new Set();
+  }
+  const w=wordQueues[diff].shift();
+  wordUsed[diff].add(w);
+  return w;
+}
+
 const WORDS_MULTI = [
   ...WORDS.easy.map(w=>({w,tier:0})), ...WORDS.medium.map(w=>({w,tier:1})),
   ...WORDS.hard.map(w=>({w,tier:2})), ...WORDS.difficult.map(w=>({w,tier:3})),
@@ -341,7 +537,7 @@ function hexRgb(hex){
 }
 function pxDraw(text,x,y,color,size=16,glow=true){
   ctx.font=`${size}px ${PX}`;
-  if(glow){ctx.shadowColor=color;ctx.shadowBlur=size*1.4;}
+  if(glow){ctx.shadowColor=color;ctx.shadowBlur=Math.min(size*1.4,8);}
   ctx.fillStyle=color; ctx.fillText(text,x,y); ctx.shadowBlur=0;
 }
 function centered(text,y,color,size=16,glow=true){
@@ -913,10 +1109,9 @@ function sendGameState(){
     type:"gamestate", from:myPlayerId,
     score:me.score, combo:me.combo, dead:me.dead,
     typed:me.typed||"",
+    name:me.name||"",
     slotIdx:localPlayerIdx,
     rows:me.rows,
-    // falling NOT sent — deterministic coordinator runs identically on every
-    // browser, so all players already see the same word at the same position.
   };
   if(lobby.role==="host"){
     guestConns.forEach(conn=>{try{conn.send(data);}catch(e){} });
@@ -1146,14 +1341,19 @@ let singleTotalKeys=0,singleCorrectWords=0,singleWrongSubmits=0;
 let singleNextWord=null,singleGameStartTime=0,singlePausedMs=0,singlePauseStartTime=0;
 
 function pickNextWord(){
-  const pool=WORDS[difficulty]||WORDS.easy;
+  const word=drawWord(difficulty||"easy");
   const col=Math.floor(Math.random()*COLS.length);
+  // Make sure the word isn't currently on screen
   const active=new Set();
   if(singleFalling) active.add(singleFalling.text);
   singleRows.forEach(r=>active.add(r.text));
-  const available=pool.filter(w=>!active.has(w));
-  const src=available.length>0?available:pool;
-  return{text:src[Math.floor(Math.random()*src.length)],col,x:COLS[col]};
+  // If drawn word is already on screen, try once more from pool
+  let finalWord=word;
+  if(active.has(word)){
+    const alt=drawWord(difficulty||"easy");
+    finalWord=active.has(alt)?word:alt; // if alt also on screen just use original
+  }
+  return{text:finalWord,col,x:COLS[col]};
 }
 
 // ── START / RESET ─────────────────────────────────────────────────────────────
@@ -1163,6 +1363,7 @@ function startGame(diff,numPlayers){
   if(!isOnlineGame) localPlayerIdx=0;
   if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
   countdownActive=false; countdownValue=3;
+  initWordPool(diff); // fresh shuffled pool, no repeats
   resetAll();
   startBGM("game");
 }
@@ -1175,17 +1376,24 @@ function resetAll(){
   singleNextWord=difficulty?pickNextWord():null;
   players=[];
   for(let i=0;i<playerCount;i++){
-    const pname=(i===0&&username)?username.toUpperCase():PLAYER_NAMES[i];
+    // For online games: slot 0 is always the host.
+    // Use lobby.hostName for slot 0 unless we ARE the host (localPlayerIdx===0).
+    let pname;
+    if(isOnlineGame && i===0 && localPlayerIdx!==0){
+      pname=(lobby.hostName||"HOST").toUpperCase();
+    } else if(i===localPlayerIdx && username){
+      pname=username.toUpperCase();
+    } else {
+      pname=PLAYER_NAMES[i];
+    }
     players.push(makePlayerState(i,PLAYER_COLORS[i],pname));
   }
   lastStanding=null; lastStandingTimer=0; multiForfeitConfirm=false;
   myRematchVote=null; rematchVotes={};
   if(rematchTimeout){ clearTimeout(rematchTimeout); rematchTimeout=null; }
   multiSpawnInterval=130; multiRoundScore=0; multiCurrentLength=3; lastSpawnTick=-1;
-  // Bug5: do NOT reset multiGameSeed / multiGameStartMs here —
-  // they are set by startCountdown (host) or gameseed msg (guest) BEFORE resetAll
   lastSendTime=0;
-  // Apply names from lobby
+  // Apply names from lobby for remaining slots
   if(isOnlineGame){
     players[localPlayerIdx].name=username?username.toUpperCase():PLAYER_NAMES[localPlayerIdx];
     const guestList=Object.entries(lobbyPeers);
@@ -1452,7 +1660,8 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
   const esc=getEscalation(p.score);
 
   ctx.save();
-  ctx.beginPath(); ctx.rect(px,py,pw,ph); ctx.clip();
+  // Inset clip by 2px so glow/shadow can never bleed past the panel border
+  ctx.beginPath(); ctx.rect(px+2,py+2,pw-4,ph-4); ctx.clip();
 
   // Background
   ctx.fillStyle=`rgba(3,3,14,${isNarrow?0.75:0.82})`;
@@ -1490,29 +1699,35 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
 
   // ── DRAW ROWS ─────────────────────────────────────────────────────────────
   for(let i=0;i<p.rows.length;i++){
-    const r=p.rows[i],wx=px+pCols[r.col%nCols],wy=pBottom-i*pRowH;
+    const r=p.rows[i];
     const fontSize=isNarrow?7:10;
     ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(r.text).width;
+    // Clamp wx so word box stays fully inside panel (4px margin each side)
+    const wxRaw=px+pCols[r.col%nCols];
+    const wx=Math.min(wxRaw, px+pw-tw-10);
+    const wy=pBottom-i*pRowH;
     const dangerRatio=p.rows.length/12;
     const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
     ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
     ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
     ctx.lineWidth=1; ctx.strokeRect(wx-3,wy-fontSize-2,tw+6,fontSize+6);
-    pxDraw(r.text,wx,wy,rowClr,fontSize,true);
+    pxDraw(r.text,wx,wy,rowClr,fontSize,false);
   }
 
   // ── DRAW FALLING WORD ─────────────────────────────────────────────────────
   if(p.falling){
-    const fx=px+pCols[p.falling.col%nCols];
     const fyPx=pTop+(p.falling.yRatio||0)*PLAY_H;
-    p.falling.x=fx; p.falling.y=fyPx; // for particle spawning
     const fontSize=isNarrow?8:11;
     ctx.font=`${fontSize}px ${PX}`; const tw=ctx.measureText(p.falling.text).width;
+    // Clamp fx so falling word stays fully inside panel (4px margin each side)
+    const fxRaw=px+pCols[p.falling.col%nCols];
+    const fx=Math.min(fxRaw, px+pw-tw-10);
+    p.falling.x=fx; p.falling.y=fyPx; // for particle spawning
     const len=p.falling.text.length;
     const wordClr=len<=3?C.green:len<=5?C.teal:len<=8?C.amber:C.red;
     ctx.fillStyle="rgba(0,180,255,0.10)"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
     ctx.strokeStyle="rgba(0,200,255,0.45)"; ctx.lineWidth=1; ctx.strokeRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
-    pxDraw(p.falling.text,fx,fyPx,wordClr,fontSize,true);
+    pxDraw(p.falling.text,fx,fyPx,wordClr,fontSize,false);
     // Length badge (mini only)
     if(isNarrow){
       const ls=`${p.falling.text.length}`;
@@ -1527,10 +1742,12 @@ function drawPane(p, px, py, pw, ph, isLocal, noHeader=false){
     if(!p.dead) p.landingFlash.timer--;
     if(p.landingFlash.timer<=0){ p.landingFlash=null; }
     else{
-      const lf=p.landingFlash,fx=px+pCols[lf.col%nCols],fyPx=pTop+lf.yRatio*PLAY_H;
+      const lf=p.landingFlash,fyPx=pTop+lf.yRatio*PLAY_H;
       const fontSize=isNarrow?8:11;
       ctx.globalAlpha=(lf.timer/8)*0.7; ctx.font=`${fontSize}px ${PX}`;
       const tw=ctx.measureText(lf.text).width;
+      const fxRaw=px+pCols[lf.col%nCols];
+      const fx=Math.min(fxRaw, px+pw-tw-10);
       ctx.fillStyle="#ffffff"; ctx.fillRect(fx-3,fyPx-fontSize-2,tw+6,fontSize+6);
       ctx.globalAlpha=1;
     }
@@ -1638,7 +1855,8 @@ function applyRemoteStates(){
     const slot=rs.slotIdx;
     if(slot===undefined||slot===localPlayerIdx||!players[slot]) return;
     const p=players[slot];
-    p.name=(rs.name||(lobbyPeers[pid]?.name)||PLAYER_NAMES[slot]).toUpperCase();
+    const hostFallback = (slot===0 && lobby.hostName) ? lobby.hostName.toUpperCase() : PLAYER_NAMES[slot];
+    p.name=(rs.name||(lobbyPeers[pid]?.name)||hostFallback).toUpperCase();
     p.score=rs.score||0; p.combo=rs.combo||0; p.dead=rs.dead||false;
     p.typed=rs.typed||"";
     // Sync rows from network — but NEVER touch p.falling:
@@ -1834,7 +2052,9 @@ function checkMultiGameOver(){
   if(state!=="game") return;
   const alive=players.filter(p=>!p.dead);
   if(alive.length===0){
-    lastStanding=null; state="gameover_multi"; stopBGM();
+    // All died simultaneously — pick top scorer as winner before clearing lastStanding
+    if(!lastStanding) lastStanding=[...players].sort((a,b)=>b.score-a.score)[0]||null;
+    state="gameover_multi"; stopBGM();
     if(playerCount>1) setTimeout(()=>initRematch(), 100);
     return;
   }
@@ -1842,7 +2062,6 @@ function checkMultiGameOver(){
     if(!lastStanding||lastStanding!==alive[0]){
       lastStanding=alive[0]; lastStandingTimer=180; sfxFanfare();
     }
-    // Bug7: countdown fires gameover when timer expires
     if(lastStandingTimer>0) lastStandingTimer--;
     if(lastStandingTimer<=0){
       state="gameover_multi"; stopBGM();
@@ -1890,13 +2109,14 @@ function game(){
     }
   }
   for(let i=0;i<singleRows.length;i++){
-    const r=singleRows[i],wx=COLS[r.col],wy=BOTTOM-i*ROW_H;
+    const r=singleRows[i],wy=BOTTOM-i*ROW_H;
     ctx.font=`13px ${PX}`; const tw=ctx.measureText(r.text).width;
+    const wx=Math.min(COLS[r.col], W-tw-24); // clamp so word stays on screen
     const dangerRatio=singleRows.length/14;
     const rowClr=dangerRatio>0.7?C.red:dangerRatio>0.4?C.amber:C.green;
     ctx.fillStyle=`rgba(0,180,120,${0.05+dangerRatio*0.1})`; ctx.fillRect(wx-8,wy-22,tw+16,28);
     ctx.strokeStyle=`rgba(${dangerRatio>0.7?"255,60,80":dangerRatio>0.4?"255,180,0":"0,230,150"},0.4)`;
-    ctx.lineWidth=1; ctx.strokeRect(wx-8,wy-22,tw+16,28); pxDraw(r.text,wx,wy,rowClr,13,true);
+    ctx.lineWidth=1; ctx.strokeRect(wx-8,wy-22,tw+16,28); pxDraw(r.text,wx,wy,rowClr,13,false);
   }
   if(singleFalling&&!paused){
     singleFalling.y+=singleFalling.speed;
@@ -1905,10 +2125,11 @@ function game(){
   }
   if(singleFalling){
     ctx.font=`14px ${PX}`; const tw=ctx.measureText(singleFalling.text).width;
+    const fx=Math.min(singleFalling.x, W-tw-24); // clamp so word stays on screen
     const wordClr=esc.danger>=3?C.red:esc.danger>=2?C.amber:C.teal;
-    ctx.fillStyle="rgba(0,180,255,0.10)"; ctx.fillRect(singleFalling.x-8,singleFalling.y-24,tw+16,30);
-    ctx.strokeStyle="rgba(0,200,255,0.45)"; ctx.lineWidth=1; ctx.strokeRect(singleFalling.x-8,singleFalling.y-24,tw+16,30);
-    pxDraw(singleFalling.text,singleFalling.x,singleFalling.y,wordClr,14,true);
+    ctx.fillStyle="rgba(0,180,255,0.10)"; ctx.fillRect(fx-8,singleFalling.y-24,tw+16,30);
+    ctx.strokeStyle="rgba(0,200,255,0.45)"; ctx.lineWidth=1; ctx.strokeRect(fx-8,singleFalling.y-24,tw+16,30);
+    pxDraw(singleFalling.text,fx,singleFalling.y,wordClr,14,false);
   }
   for(let i=singleParticles.length-1;i>=0;i--){const p=singleParticles[i];if(!paused){p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life-=0.035;}if(p.life<=0){singleParticles.splice(i,1);continue;}ctx.globalAlpha=p.life;ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,p.size,p.size);}
   ctx.globalAlpha=1;
@@ -2186,13 +2407,15 @@ function gameover_multi(){
   ctx.fillStyle="#05050f"; ctx.fillRect(60,160,480,420);
   ctx.strokeStyle=C.purple; ctx.shadowColor=C.purple; ctx.shadowBlur=20; ctx.lineWidth=2; ctx.strokeRect(60,160,480,420); ctx.shadowBlur=0;
   ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.25)`; ctx.fillRect(62,162,476,22);
-  if(lastStanding){
+  const sorted=[...players].sort((a,b)=>b.score-a.score);
+  // Winner = lastStanding (survived longest) OR top scorer if everyone died simultaneously
+  const winner = lastStanding || sorted[0] || null;
+  if(winner){
     centered("WINNER!",210,C.green,20,true);
-    ctx.font=`14px ${PX}`; const nw=ctx.measureText(lastStanding.name).width;
-    pxDraw(lastStanding.name,W/2-nw/2,248,lastStanding.color,14,true);
+    ctx.font=`14px ${PX}`; const nw=ctx.measureText(winner.name).width;
+    pxDraw(winner.name,W/2-nw/2,248,winner.color,14,true);
   } else { centered("GAME OVER",220,C.red,22,true); }
   ctx.fillStyle=C.dim; ctx.fillRect(80,262,440,1);
-  const sorted=[...players].sort((a,b)=>b.score-a.score);
   sorted.forEach((p,i)=>{
     const y=285+i*52,rankClr=i===0?C.amber:i===1?"#aaaacc":i===2?"#cc8833":C.dim+"ff";
     ctx.font=`8px ${PX}`;
