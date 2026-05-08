@@ -670,7 +670,7 @@ function openHostPeer(code){
 async function hostGame(){
   const code = generateCode();
   lobby.code=code; lobby.players=1; lobby.role="host";
-  lobby.hostPeerId=myPlayerId; lobby.hostName=username?username.toUpperCase():"HOST";
+  lobby.hostPeerId=myPlayerId; lobby.hostName=username?username:"HOST";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
   state="lobby_wait";
   openHostPeer(code);
@@ -793,7 +793,7 @@ function attemptHostMigration(){
     lobby.role       = "join";
     hostConn         = null;
     lobby.hostPeerId = newHostId;
-    lobby.hostName   = (lobbyPeers[newHostId]?.name||"HOST").toUpperCase();
+    lobby.hostName   = lobbyPeers[newHostId]?.name||"HOST";
     lobby.hostReady  = false;
     if(!keepState){ myReady = false; }
     // Only show message if in lobby — during game/gameover just reconnect silently
@@ -807,7 +807,7 @@ function attemptHostMigration(){
 function becomeHost(code, keepState, prevState){
   lobby.role       = "host";
   lobby.hostPeerId = myPlayerId;
-  lobby.hostName   = username ? username.toUpperCase() : "HOST";
+  lobby.hostName   = username ? username : "HOST";
   lobby.code       = code;
   hostConn         = null;
   joinErrorMsg     = "";
@@ -900,7 +900,7 @@ function onLobbyMsg(data, fromConn){
       // During game or gameover, just silently update host info and stay on current screen
       if(state==="lobby_wait"){
         myReady=false; lobbyReadyCount=0;
-        joinErrorMsg="NEW HOST: "+(name||"HOST").toUpperCase().slice(0,8);
+        joinErrorMsg="NEW HOST: "+(name||"HOST").slice(0,8);
         setTimeout(()=>{if(joinErrorMsg.startsWith("NEW HOST")) joinErrorMsg="";},3000);
         sfxLobbyReady();
         state="lobby_wait";
@@ -920,8 +920,23 @@ function onLobbyMsg(data, fromConn){
       if(fromConn){ try{ fromConn.send({type:"rejected", reason:"THIS IS A "+(lobby.required===2?"2P":"4P")+" ROOM!"}); }catch(e){} }
       return;
     }
+    // Resolve duplicate names — host name + all existing guests
+    let assignedName = name||from;
+    const takenNames = [
+      lobby.hostName||"HOST",
+      ...Object.entries(lobbyPeers).filter(([id])=>id!==from).map(([,p])=>p.name)
+    ];
+    if(takenNames.includes(assignedName)){
+      let suffix=2;
+      while(takenNames.includes(assignedName+"_"+suffix)) suffix++;
+      assignedName=assignedName+"_"+suffix;
+    }
     if(!lobbyPeers[from]) sfxPlayerJoin();
-    lobbyPeers[from]={name:name||from,ready:false,conn:fromConn};
+    lobbyPeers[from]={name:assignedName,ready:false,conn:fromConn};
+    // Notify the guest of their assigned name if it changed
+    if(assignedName !== (name||from)){
+      if(fromConn){ try{ fromConn.send({type:"name_assigned", name:assignedName}); }catch(e){} }
+    }
     if(fromConn) fromConn._peerId=from;
     lobby.players=Object.keys(lobbyPeers).length+1;
     // Broadcast updated full list — only include peers whose conn is alive (reconnected)
@@ -987,6 +1002,15 @@ function onLobbyMsg(data, fromConn){
     if(data.slotOrder){
       const mySlot = data.slotOrder.indexOf(myPlayerId);
       if(mySlot !== -1) localPlayerIdx = mySlot;
+    }
+
+  } else if(type==="name_assigned"){
+    // Host assigned us a different name to avoid duplicates — update locally
+    if(data.name){
+      username=data.name;
+      joinErrorMsg="NAME TAKEN! You are now: "+data.name;
+      setTimeout(()=>{ if(joinErrorMsg.startsWith("NAME TAKEN")) joinErrorMsg=""; }, 4000);
+      sfxMiss();
     }
 
   } else if(type==="rejected"){
@@ -1380,9 +1404,9 @@ function resetAll(){
     // Use lobby.hostName for slot 0 unless we ARE the host (localPlayerIdx===0).
     let pname;
     if(isOnlineGame && i===0 && localPlayerIdx!==0){
-      pname=(lobby.hostName||"HOST").toUpperCase();
+      pname=lobby.hostName||"HOST";
     } else if(i===localPlayerIdx && username){
-      pname=username.toUpperCase();
+      pname=username;
     } else {
       pname=PLAYER_NAMES[i];
     }
@@ -1395,11 +1419,11 @@ function resetAll(){
   lastSendTime=0;
   // Apply names from lobby for remaining slots
   if(isOnlineGame){
-    players[localPlayerIdx].name=username?username.toUpperCase():PLAYER_NAMES[localPlayerIdx];
+    players[localPlayerIdx].name=username?username:PLAYER_NAMES[localPlayerIdx];
     const guestList=Object.entries(lobbyPeers);
     guestList.forEach(([pid,peer],i)=>{
       const slot=i+(localPlayerIdx===0?1:0);
-      if(players[slot]) players[slot].name=(peer.name||"P?").toUpperCase();
+      if(players[slot]) players[slot].name=peer.name||"P?";
       if(!remoteStates[pid]) remoteStates[pid]={};
       remoteStates[pid].slotIdx=slot;
     });
@@ -1855,8 +1879,8 @@ function applyRemoteStates(){
     const slot=rs.slotIdx;
     if(slot===undefined||slot===localPlayerIdx||!players[slot]) return;
     const p=players[slot];
-    const hostFallback = (slot===0 && lobby.hostName) ? lobby.hostName.toUpperCase() : PLAYER_NAMES[slot];
-    p.name=(rs.name||(lobbyPeers[pid]?.name)||hostFallback).toUpperCase();
+    const hostFallback = (slot===0 && lobby.hostName) ? lobby.hostName : PLAYER_NAMES[slot];
+    p.name=rs.name||(lobbyPeers[pid]?.name)||hostFallback;
     p.score=rs.score||0; p.combo=rs.combo||0; p.dead=rs.dead||false;
     p.typed=rs.typed||"";
     // Sync rows from network — but NEVER touch p.falling:
@@ -2150,7 +2174,7 @@ function game(){
   if(singleRows.length>=10&&Math.floor(Date.now()/400)%2===0&&!paused) centered("DANGER! CLEAR THE STACK!",320,C.red,10,true);
   ctx.fillStyle="rgba(3,3,18,0.95)"; ctx.fillRect(0,648,W,52); ctx.fillStyle=C.teal; ctx.fillRect(0,648,W,2);
   pxDraw("TYPE>",16,683,"#2a4a6a",11,false); pxDraw(paused?"":singleTyped+"_",82,683,C.teal,13,Math.floor(Date.now()/400)%2===0);
-  if(username){ctx.font=`7px ${PX}`;pxDraw(username.toUpperCase(),W-14-ctx.measureText(username.toUpperCase()).width,683,C.purple,7,true);}
+  if(username){ctx.font=`7px ${PX}`;pxDraw(username,W-14-ctx.measureText(username).width,683,C.purple,7,true);}
   const pb=PAUSE_BTN_SP,phov=pauseBtnHovered,pclr=paused?C.amber:C.teal;
   ctx.fillStyle=phov||paused?"rgba(255,200,0,0.12)":"rgba(0,0,0,0.55)"; ctx.fillRect(pb.x,pb.y,pb.w,pb.h);
   ctx.strokeStyle=paused?C.amber:(phov?C.teal:"rgba(0,229,204,0.4)"); ctx.lineWidth=2; ctx.strokeRect(pb.x,pb.y,pb.w,pb.h);
@@ -2182,7 +2206,7 @@ function menu(){
   centered("WORD",132,C.teal,36,true); centered("ARENA",174,C.blue,36,true);
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
   if(Math.floor(Date.now()/600)%2===0) centered("-- INSERT COIN --",560,C.dim+"ff",10,false);
-  if(username){ctx.font=`8px ${PX}`;pxDraw("HI, "+username.toUpperCase()+"!",14,H-16,C.purple,8,true);}
+  if(username){ctx.font=`8px ${PX}`;pxDraw("HI, "+username+"!",14,H-16,C.purple,8,true);}
 }
 function difficultyMenu(){centered("SELECT DIFFICULTY",110,C.purple,16,true);diffButtons.forEach((b,i)=>pixelBox(b,diffColors[i]||C.teal));}
 function multiMenu(){centered("MULTIPLAYER MODE",110,C.teal,16,true);multiButtons.forEach((b,i)=>pixelBox(b,multiColors[i]));}
@@ -2220,8 +2244,8 @@ function lobbyWait(){
   // Player panels
   const guestList=Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name||id,ready:p.ready||false,isMe:false}));
   let allPeers;
-  if(lobby.role==="host") allPeers=[{id:myPlayerId,name:username?username.toUpperCase():"HOST",ready:myReady,isMe:true},...guestList];
-  else allPeers=[{id:"host",name:(lobby.hostName||"HOST").toUpperCase(),ready:lobby.hostReady||false,isMe:false},{id:myPlayerId,name:username?username.toUpperCase():"ME",ready:myReady,isMe:true},...guestList];
+  if(lobby.role==="host") allPeers=[{id:myPlayerId,name:username?username:"HOST",ready:myReady,isMe:true},...guestList];
+  else allPeers=[{id:"host",name:lobby.hostName||"HOST",ready:lobby.hostReady||false,isMe:false},{id:myPlayerId,name:username?username:"ME",ready:myReady,isMe:true},...guestList];
   const maxShow=lobby.required,panelW=240,panelH=100,panelGap=10;
   const totalW=Math.min(maxShow,2)*(panelW+panelGap)-panelGap,startX=(W-totalW)/2;
   for(let i=0;i<maxShow;i++){
