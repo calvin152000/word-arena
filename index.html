@@ -94,6 +94,10 @@ let lastMouseX  = 0, lastMouseY = 0;
 let lastState   = "";
 let howToPlayPage = 0;
 const HTP_PAGES   = 3;
+let clickFX = null; // {x,y,time,color} — click ripple feedback overlay
+let visualState = "splash", stateChangeTime = 0;
+const TRANSITION_MS = 220;
+let copyCodeFlash = 0; // timestamp of last successful room-code copy, for confirmation flash
 let multiForfeitConfirm = false;
 let spectatorMode = false; // true when local player is dead in 4P and watching others
 
@@ -362,6 +366,7 @@ function getMultiPts(word, combo, danger){
 let soundEnabled=true, audioCtx=null, audioReady=false;
 let masterGain,bgmGain,sfxGain,sfxLP,reverbGain,reverbDelay,reverbFB,reverbLP;
 let bgmDirect,leadGain,counterGain,bassGain,arpGain;
+let leadPan,counterPan,bassPan,arpPan;
 
 function initAudio(){
   if(audioReady) return; audioReady=true;
@@ -384,7 +389,34 @@ function initAudio(){
   counterGain=audioCtx.createGain(); counterGain.gain.value=0.28;
   bassGain=audioCtx.createGain(); bassGain.gain.value=0.40;
   arpGain=audioCtx.createGain(); arpGain.gain.value=0.08;
-  [leadGain,counterGain,bassGain,arpGain].forEach(g=>g.connect(bgmGain));
+  leadPan=audioCtx.createStereoPanner(); leadPan.pan.value=0;
+  counterPan=audioCtx.createStereoPanner(); counterPan.pan.value=-0.34;
+  bassPan=audioCtx.createStereoPanner(); bassPan.pan.value=0;
+  arpPan=audioCtx.createStereoPanner(); arpPan.pan.value=0.34;
+  leadGain.connect(leadPan); counterGain.connect(counterPan); bassGain.connect(bassPan); arpGain.connect(arpPan);
+  [leadPan,counterPan,bassPan,arpPan].forEach(p=>p.connect(bgmGain));
+}
+function noiseHit(dur=0.05,vol=0.25,freq=1500,type="highpass"){
+  if(!soundEnabled||!audioReady) return;
+  try{
+    const len=Math.floor(audioCtx.sampleRate*dur),buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate);
+    const d=buf.getChannelData(0); for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+    const src=audioCtx.createBufferSource(),flt=audioCtx.createBiquadFilter(),g=audioCtx.createGain();
+    flt.type=type; flt.frequency.value=freq;
+    src.buffer=buf; src.connect(flt); flt.connect(g); g.connect(sfxGain);
+    g.gain.setValueAtTime(vol,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+    src.start(); src.stop(audioCtx.currentTime+dur+0.02);
+  }catch(e){}
+}
+function duckBGM(amount=0.4,holdMs=160){
+  if(!audioReady||!bgmState||!soundEnabled) return;
+  try{
+    const now=audioCtx.currentTime, base=0.18;
+    bgmGain.gain.cancelScheduledValues(now);
+    bgmGain.gain.setValueAtTime(bgmGain.gain.value,now);
+    bgmGain.gain.linearRampToValueAtTime(base*(1-amount),now+0.025);
+    bgmGain.gain.linearRampToValueAtTime(base,now+0.025+holdMs/1000);
+  }catch(e){}
 }
 function softTone(freq,dur=0.12,vol=0.5,pitchEnd=0){
   if(!soundEnabled||!audioReady) return;
@@ -405,11 +437,11 @@ function softTone(freq,dur=0.12,vol=0.5,pitchEnd=0){
 }
 function sfxClick(){softTone(440,0.06,0.45);setTimeout(()=>softTone(550,0.05,0.25),18);}
 function sfxType(){softTone(392,0.055,0.28);}
-function sfxDestroy(){[523,659,784].forEach((f,i)=>setTimeout(()=>softTone(f,0.14,0.40),i*38));}
-function sfxMiss(){softTone(280,0.22,0.36,180);}
-function sfxCombo(){[523,659,784,1047].forEach((f,i)=>setTimeout(()=>softTone(f,0.18,0.36),i*45));}
+function sfxDestroy(){noiseHit(0.035,0.22,2200);[523,659,784].forEach((f,i)=>setTimeout(()=>softTone(f,0.14,0.40),i*38));duckBGM(0.35,160);}
+function sfxMiss(){noiseHit(0.11,0.20,450,"lowpass");softTone(280,0.22,0.36,180);duckBGM(0.3,150);}
+function sfxCombo(){[523,659,784,1047].forEach((f,i)=>setTimeout(()=>softTone(f,0.18,0.36),i*45));duckBGM(0.45,240);}
 function sfxLand(){softTone(180,0.18,0.38,130);}
-function sfxCoin(){[[880,0],[740,80],[622,160],[523,260]].forEach(([f,d])=>setTimeout(()=>softTone(f,0.13,0.50),d));}
+function sfxCoin(){[[880,0],[740,80],[622,160],[523,260]].forEach(([f,d])=>setTimeout(()=>softTone(f,0.13,0.50),d));duckBGM(0.3,260);}
 function sfxHover(){softTone(660,0.04,0.14);}
 function sfxTransition(){
   if(!soundEnabled||!audioReady) return;
@@ -420,7 +452,7 @@ function sfxTransition(){
   osc.start(now); osc.stop(now+0.25);}catch(e){}
 }
 function sfxBack(){softTone(440,0.10,0.34);setTimeout(()=>softTone(330,0.12,0.26),70);}
-function sfxFanfare(){[[523,0],[659,90],[784,180],[1047,280]].forEach(([f,d])=>setTimeout(()=>softTone(f,0.22,0.48),d));}
+function sfxFanfare(){[[523,0],[659,90],[784,180],[1047,280]].forEach(([f,d])=>setTimeout(()=>softTone(f,0.22,0.48),d));duckBGM(0.5,320);}
 function sfxPlayerJoin(){softTone(784,0.15,0.44);setTimeout(()=>softTone(1047,0.20,0.38),100);}
 function sfxLobbyReady(){[523,659,784].forEach((f,i)=>setTimeout(()=>softTone(f,0.30,0.44),i*30));}
 function sfxCountdownBeep(){softTone(880,0.18,0.55);}
@@ -446,17 +478,22 @@ const GAME_BASS=[[hz('A2'),0.5],[0,0.25],[hz('A2'),0.25],[hz('C3'),0.5],[hz('E3'
 const LOBBY_DUR=LEAD.reduce((s,[,b])=>s+b,0)*BEAT;
 const GAME_DUR=GAME_LEAD.reduce((s,[,b])=>s+b,0)*BEAT;
 let bgmState=null,bgmLoopTimer=null,scheduledUntil=0;
-function scheduleNote(freq,startT,dur,type,gainNode,vol=1.0){
+function scheduleNote(freq,startT,dur,type,gainNode,vol=1.0,detune=0){
   if(!soundEnabled||!audioReady||freq<=0) return;
   const osc=audioCtx.createOscillator(),env=audioCtx.createGain();
   osc.connect(env); env.connect(gainNode); osc.type=type; osc.frequency.setValueAtTime(freq,startT);
+  if(detune) osc.detune.setValueAtTime(detune,startT);
   const atk=Math.min(0.015,dur*0.1),rel=Math.min(0.06,dur*0.25);
   env.gain.setValueAtTime(0,startT); env.gain.linearRampToValueAtTime(vol,startT+atk);
   env.gain.setValueAtTime(vol,startT+dur-rel); env.gain.linearRampToValueAtTime(0,startT+dur+0.01);
   osc.start(startT); osc.stop(startT+dur+0.02);
 }
-function schedulePattern(pat,startT,type,gainNode,vol=1.0){
-  let t=startT; pat.forEach(([f,b])=>{scheduleNote(f,t,b*BEAT,type,gainNode,vol);t+=b*BEAT;});
+function schedulePattern(pat,startT,type,gainNode,vol=1.0,unison=false){
+  let t=startT; pat.forEach(([f,b])=>{
+    scheduleNote(f,t,b*BEAT,type,gainNode,vol);
+    if(unison&&f>0) scheduleNote(f,t,b*BEAT,type,gainNode,vol*0.32,8);
+    t+=b*BEAT;
+  });
 }
 function scheduleKick(t){
   if(!soundEnabled||!audioReady) return;
@@ -514,11 +551,11 @@ function scheduleBGMChunk(){
   while(scheduledUntil<now+LOOKAHEAD){
     const t=scheduledUntil;
     if(bgmState==="menu"){
-      schedulePattern(LEAD,t,"square",leadGain,1.0); schedulePattern(COUNTER,t,"triangle",counterGain,1.0);
+      schedulePattern(LEAD,t,"square",leadGain,1.0,true); schedulePattern(COUNTER,t,"triangle",counterGain,1.0);
       schedulePattern(BASS,t,"sawtooth",bassGain,1.0); schedulePattern(ARP,t,"sine",arpGain,1.0);
       scheduledUntil=t+LOBBY_DUR;
     } else if(bgmState==="game"){
-      schedulePattern(GAME_LEAD,t,"square",leadGain,1.0); schedulePattern(GAME_BASS,t,"sawtooth",bassGain,1.0);
+      schedulePattern(GAME_LEAD,t,"square",leadGain,1.0,true); schedulePattern(GAME_BASS,t,"sawtooth",bassGain,1.0);
       scheduleDrums(t,2); scheduledUntil=t+GAME_DUR;
     }
   }
@@ -545,20 +582,98 @@ function centered(text,y,color,size=16,glow=true){
   ctx.font=`${size}px ${PX}`; const w=ctx.measureText(text).width;
   pxDraw(text,W/2-w/2,y,color,size,glow);
 }
+function drawClickRipple(){
+  if(!clickFX) return;
+  const dur=380, dt=Date.now()-clickFX.time;
+  if(dt>dur){clickFX=null;return;}
+  const t=dt/dur, rgb=hexRgb(clickFX.color);
+  const r=6+42*t, ringA=(1-t)*0.6, coreA=(1-t*1.3)*0.4;
+  ctx.save();
+  ctx.strokeStyle=`rgba(${rgb},${Math.max(0,ringA).toFixed(3)})`; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(clickFX.x,clickFX.y,r,0,Math.PI*2); ctx.stroke();
+  if(coreA>0){ctx.fillStyle=`rgba(${rgb},${coreA.toFixed(3)})`; ctx.beginPath(); ctx.arc(clickFX.x,clickFX.y,r*0.35,0,Math.PI*2); ctx.fill();}
+  ctx.restore();
+}
 function pixelBox(b,color=C.teal){
+  const hovered=hit(b,lastMouseX,lastMouseY);
+  const rgb=hexRgb(color);
+  const pulse=hovered?0.75+0.25*Math.sin(Date.now()*0.008):1;
+
+  // drop shadow
   ctx.fillStyle="rgba(0,0,0,0.55)"; ctx.fillRect(b.x+4,b.y+4,b.w,b.h);
-  ctx.fillStyle="rgba(5,5,25,0.9)"; ctx.fillRect(b.x,b.y,b.w,b.h);
+
+  // soft ambient bloom behind hovered box
+  if(hovered){
+    ctx.save(); ctx.shadowColor=color; ctx.shadowBlur=24*pulse;
+    ctx.fillStyle=`rgba(${rgb},0.03)`; ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.restore();
+  }
+
+  // gradient body — tinted top fading to near-black
+  const grad=ctx.createLinearGradient(b.x,b.y,b.x,b.y+b.h);
+  grad.addColorStop(0,`rgba(${rgb},${hovered?0.18:0.09})`);
+  grad.addColorStop(0.55,"rgba(5,5,25,0.92)");
+  grad.addColorStop(1,"rgba(2,2,12,0.95)");
+  ctx.fillStyle=grad; ctx.fillRect(b.x,b.y,b.w,b.h);
+
+  // glass highlight strip along the top
+  const hl=ctx.createLinearGradient(b.x,b.y,b.x,b.y+b.h*0.42);
+  hl.addColorStop(0,"rgba(255,255,255,0.08)");
+  hl.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.fillStyle=hl; ctx.fillRect(b.x+2,b.y+2,b.w-4,b.h*0.42);
+
+  // outer border with glow (brighter/pulsing on hover)
+  ctx.save();
+  ctx.shadowColor=color; ctx.shadowBlur=hovered?16*pulse:5;
   ctx.strokeStyle=color; ctx.lineWidth=2; ctx.strokeRect(b.x,b.y,b.w,b.h);
-  ctx.strokeStyle=`rgba(${hexRgb(color)},0.2)`; ctx.lineWidth=1; ctx.strokeRect(b.x+4,b.y+4,b.w-8,b.h-8);
-  const s=6; ctx.fillStyle=color;
+  ctx.restore();
+
+  // inner hairline
+  ctx.strokeStyle=`rgba(${rgb},${hovered?0.35:0.2})`; ctx.lineWidth=1; ctx.strokeRect(b.x+4,b.y+4,b.w-8,b.h-8);
+
+  // corner brackets — slightly larger + brighter when hovered
+  const s=hovered?8:6; ctx.fillStyle=color;
   ctx.fillRect(b.x,b.y,s,2);ctx.fillRect(b.x,b.y,2,s);
   ctx.fillRect(b.x+b.w-s,b.y,s,2);ctx.fillRect(b.x+b.w-2,b.y,2,s);
   ctx.fillRect(b.x,b.y+b.h-2,s,2);ctx.fillRect(b.x,b.y+b.h-s,2,s);
   ctx.fillRect(b.x+b.w-s,b.y+b.h-2,s,2);ctx.fillRect(b.x+b.w-2,b.y+b.h-s,2,s);
+
+  // left accent bar — arcade cabinet button feel
+  ctx.globalAlpha=hovered?0.9:0.5; ctx.fillStyle=color;
+  ctx.fillRect(b.x,b.y+7,3,b.h-14);
+  ctx.globalAlpha=1;
+
+  // label
   ctx.font=`13px ${PX}`; const tw=ctx.measureText(b.text).width;
-  pxDraw(b.text,b.x+(b.w-tw)/2,b.y+b.h/2+6,color,13,false);
+  pxDraw(b.text,b.x+(b.w-tw)/2,b.y+b.h/2+6,color,13,true);
 }
 function hit(b,x,y){return x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h;}
+function glassPanel(x,y,w,h,color,cornerSize=8){
+  const rgb=hexRgb(color);
+  ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(x+4,y+4,w,h);
+  const grad=ctx.createLinearGradient(x,y,x,y+h);
+  grad.addColorStop(0,`rgba(${rgb},0.10)`);
+  grad.addColorStop(0.5,"rgba(0,5,20,0.85)");
+  grad.addColorStop(1,"rgba(0,2,10,0.92)");
+  ctx.fillStyle=grad; ctx.fillRect(x,y,w,h);
+  const hl=ctx.createLinearGradient(x,y,x,y+Math.min(h*0.3,40));
+  hl.addColorStop(0,"rgba(255,255,255,0.07)"); hl.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.fillStyle=hl; ctx.fillRect(x+2,y+2,w-4,Math.min(h*0.3,40));
+  ctx.save(); ctx.shadowColor=color; ctx.shadowBlur=6;
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  ctx.restore();
+  const s=cornerSize; ctx.fillStyle=color;
+  ctx.fillRect(x,y,s,2);ctx.fillRect(x,y,2,s);ctx.fillRect(x+w-s,y,s,2);ctx.fillRect(x+w-2,y,2,s);
+  ctx.fillRect(x,y+h-2,s,2);ctx.fillRect(x,y+h-s,2,s);ctx.fillRect(x+w-s,y+h-2,s,2);ctx.fillRect(x+w-2,y+h-s,2,s);
+}
+function innerField(x,y,w,h,color,tintAlpha=0.1){
+  const rgb=hexRgb(color);
+  const grad=ctx.createLinearGradient(x,y,x,y+h);
+  grad.addColorStop(0,`rgba(${rgb},${tintAlpha})`);
+  grad.addColorStop(1,"rgba(3,3,15,0.88)");
+  ctx.fillStyle=grad; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+}
 function button(text,x,y,w,h){return{text,x,y,w,h};}
 function spawnParticles(arr,x,y,color,count=8){
   for(let i=0;i<count;i++){
@@ -593,6 +708,30 @@ let isOnlineGame=false, localPlayerIdx=0, gameSessionId=0;
 let remoteStates = {};
 const SEND_INTERVAL_MS = 50;
 let lastSendTime = 0;
+
+// ── LOBBY TEXT CHAT (lobby-only, no voice — safer for public rooms) ──────────
+let chatMessages=[]; // {name,text,mine,time}
+let chatInput="", chatOpen=false, unreadChat=0;
+const CHAT_MAX_MSGS=40, CHAT_MAX_LEN=80;
+
+function resetChat(){ chatMessages=[]; chatInput=""; chatOpen=false; unreadChat=0; }
+
+function addChatMessage(name,text,mine){
+  chatMessages.push({name:(name||"???").slice(0,14),text,mine:!!mine,time:Date.now()});
+  if(chatMessages.length>CHAT_MAX_MSGS) chatMessages.shift();
+  if(!chatOpen && !mine){ unreadChat++; sfxHover(); }
+}
+
+function sendChatMessage(){
+  const text=chatInput.trim().slice(0,CHAT_MAX_LEN);
+  chatInput="";
+  if(!text) return;
+  const myName=username||(lobby.role==="host"?"HOST":"ME");
+  const data={type:"chat", from:myPlayerId, name:myName, text};
+  addChatMessage(myName, text, true);
+  if(lobby.role==="host") broadcastLobby(data);
+  else sendToHost(data);
+}
 
 function generateCode(){return Math.random().toString(36).substring(2,7).toUpperCase();}
 
@@ -658,7 +797,8 @@ async function hostGame(){
   const code = generateCode();
   lobby.code=code; lobby.players=1; lobby.role="host";
   lobby.hostPeerId=myPlayerId; lobby.hostName=username?username:"HOST";
-  lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
+  lobbyPeers={}; myReady=true; lobbyReadyCount=1; countdownActive=false; countdownValue=3;
+  resetChat();
   state="lobby_wait";
   openHostPeer(code);
 }
@@ -823,6 +963,7 @@ async function submitJoinCode(){
   if(val.length<3){joinErrorMsg="ENTER A CODE!";sfxMiss();return;}
   lobby.code=val; lobby.role="join";
   lobbyPeers={}; myReady=false; lobbyReadyCount=0; countdownActive=false; countdownValue=3;
+  resetChat();
   openGuestPeer(val, false);
 }
 
@@ -843,8 +984,8 @@ function attemptHostMigration(){
     lobby.hostName   = username||"HOST";
     hostConn         = null;
     guestConns       = [];
-    myReady          = false;
-    lobbyReadyCount  = 0;
+    myReady          = true;
+    lobbyReadyCount  = 1;
     Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
     openHostPeer(code, myPlayerId);   // <-- use myPlayerId, not "wArena-"+code
     state = "lobby_wait";
@@ -980,6 +1121,16 @@ function onLobbyMsg(data, fromConn){
     }
     if(data.peerId){ delete lobbyPeers[data.peerId]; delete remoteStates[data.peerId]; }
 
+  } else if(type==="chat"){
+    if(from!==myPlayerId){
+      const senderName=(lobby.role==="join"&&from===lobby.hostPeerId)?(lobby.hostName||name||"HOST"):(lobbyPeers[from]?.name||name||"???");
+      addChatMessage(senderName, String(data.text||"").slice(0,CHAT_MAX_LEN), false);
+    }
+    // Host relays chat to every other guest (hub-and-spoke, same as game state)
+    if(lobby.role==="host"){
+      guestConns.forEach(conn=>{ if(conn!==fromConn){ try{conn.send(data);}catch(e){} } });
+    }
+
   } else if(type==="leave"){
     // Host left — trigger migration immediately
     if(lobby.role==="join" && from===lobby.hostPeerId){
@@ -1107,6 +1258,7 @@ function leaveLobbyChannel(){
   const peerToClose=myPeer, hostToClose=hostConn, guestsToClose=[...guestConns];
   hostConn=null; guestConns=[]; lobbyPeers={}; remoteStates={};
   lobby.code=null; lobby.players=0; lobby.role=null; lobby.hostPeerId=null;
+  resetChat();
   setTimeout(()=>{
     if(hostToClose){ try{hostToClose.close();}catch(e){} }
     guestsToClose.forEach(c=>{try{c.close();}catch(e){}});
@@ -1191,7 +1343,7 @@ function castRematchVote(playAgain){
 
 // ── RETURN TO LOBBY (Play Again) ────────────────────────────────────────────────────────────
 function returnToLobby(){
-  myReady=false; lobbyReadyCount=0;
+  myReady=(lobby.role==="host"); lobbyReadyCount=myReady?1:0;
   countdownActive=false; countdownValue=3;
   if(countdownInterval){ clearInterval(countdownInterval); countdownInterval=null; }
   Object.keys(lobbyPeers).forEach(id=>{ if(lobbyPeers[id]) lobbyPeers[id].ready=false; });
@@ -1205,6 +1357,9 @@ function returnToLobby(){
     if(!myPeer || !myPeer.open) openHostPeer(lobby.code);
     broadcastLobby({type:"sync_peers",total:lobby.players,hostPeerId:myPlayerId,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+    // Existing guests already have an open connection (no fresh "welcome" incoming) —
+    // tell them directly that the host is auto-ready again.
+    broadcastLobby({type:"readystate",from:myPlayerId,isReady:myReady,readyCount:lobbyReadyCount,total:lobby.players});
     startLobbyHeartbeat();
   } else if(lobby.role==="join"){
     // Guest: reconnect to current host.
@@ -1442,6 +1597,7 @@ c.addEventListener("mousemove",(e)=>{
 document.addEventListener("mousedown",(e)=>{
   const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(W/rect.width),my=(e.clientY-rect.top)*(H/rect.height);
+  clickFX={x:mx,y:my,time:Date.now(),color:C.teal};
   if(state==="splash"&&splashPhase==="press"){if(!audioReady)initAudio();audioCtx.resume().then(()=>sfxCoin());splashPhase="name";return;}
   if(state==="splash"&&splashPhase==="name"){if(!audioReady){initAudio();audioCtx.resume();}if(hit({x:185,y:368,w:230,h:55},mx,my))confirmUsername();return;}
   if(!audioReady){initAudio();audioCtx.resume().then(()=>startBGM("menu"));}
@@ -1484,6 +1640,15 @@ document.addEventListener("mousedown",(e)=>{
     }
   }
   sfxClick();
+  if(state==="lobby_wait"&&chatOpen){
+    if(hit(CHAT_CLOSE_BTN,mx,my)){chatOpen=false;return;}
+    if(!hit(CHAT_PANEL,mx,my)){chatOpen=false;return;}
+    return; // swallow other clicks while chat modal is open
+  }
+  if(state==="lobby_wait"&&hit({x:40,y:84,w:118,h:18},mx,my)){
+    chatOpen=!chatOpen; if(chatOpen) unreadChat=0;
+    return;
+  }
   if(leaveLobbyConfirm&&state==="lobby_wait"){
     if(hit({x:160,y:345,w:120,h:50},mx,my)){leaveLobbyChannel();state="menu";lobby.code=null;lobby.players=0;lobby.role=null;leaveLobbyConfirm=false;startBGM("menu");}
     if(hit({x:320,y:345,w:120,h:50},mx,my)) leaveLobbyConfirm=false;
@@ -1510,6 +1675,14 @@ document.addEventListener("mousedown",(e)=>{
     hostJoinButtons.forEach((b,i)=>{if(hit(b,mx,my)){if(i===0){sfxTransition();hostGame();}if(i===1){sfxTransition();joinGame();}if(i===2){sfxBack();leaveLobbyChannel();state="menu";lobby.code=null;lobby.players=0;lobby.role=null;}}});
   } else if(state==="lobby_wait"){
     const rcY=lobby.required===4?415:307,diffY=rcY+46,hintY=diffY+58,backY=hintY+116;
+    // COPY room code button
+    const copyBtn={x:80+330+10,y:124,w:100,h:52};
+    if(hit(copyBtn,mx,my)&&lobby.code){
+      const doFlash=()=>{copyCodeFlash=Date.now();sfxClick();};
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(lobby.code).then(doFlash).catch(doFlash);
+      else doFlash();
+      return;
+    }
     // MENU button — go to menu but stay in lobby session
     if(hit({x:60,y:backY,w:200,h:42},mx,my)){sfxBack();state="menu";startBGM("menu");return;}
     // LEAVE button — confirm then actually disconnect
@@ -1545,6 +1718,17 @@ document.addEventListener("keydown",(e)=>{
   }
   if(!audioReady){initAudio();audioCtx.resume().then(()=>startBGM("menu"));}
   else if(audioCtx&&audioCtx.state==="suspended") audioCtx.resume();
+  if(state==="lobby_wait"&&chatOpen){
+    e.preventDefault();
+    if(e.key==="Escape"){chatOpen=false;return;}
+    if(e.key==="Enter"){sendChatMessage();return;}
+    if(e.key==="Backspace"){chatInput=chatInput.slice(0,-1);return;}
+    if(e.key.length===1&&chatInput.length<CHAT_MAX_LEN&&/^[a-zA-Z0-9 .,!?'":;\-_()]$/.test(e.key)){chatInput+=e.key;}
+    return;
+  }
+  if(state==="lobby_wait"&&!chatOpen&&(e.key==="t"||e.key==="T")&&!countdownActive){
+    e.preventDefault(); chatOpen=true; unreadChat=0; return;
+  }
   if(state==="lobby_wait"&&e.key===" "&&!countdownActive){
     e.preventDefault(); myReady=!myReady;
     if(lobby.role==="host") broadcastLobby({type:"readystate",from:myPlayerId,isReady:myReady,readyCount:lobbyReadyCount,total:lobby.players});
@@ -1936,26 +2120,29 @@ function game4P(){
 
   const t0 = Date.now() * 0.003;
 
-  // ── Layout: Tetris Effect Connected — main panel LEFT, slightly wider ─────
-  // All 4 panels side by side. Local player always drawn first (leftmost).
-  // Panel order on screen: [localPlayer, opp0, opp1, opp2]
-  const GAP      = 3;
-  const HDR      = 28;
-  const ME_FRAC  = 0.31;   // main panel fraction of total width
-  const OPP_FRAC = (1 - ME_FRAC - (GAP * 3) / W) / 3;
-  const ME_W     = Math.floor(W * ME_FRAC);
-  const OPP_W    = Math.floor((W - ME_W - GAP * 3) / 3);
+  // ── Layout: Tetris 99 style — main board LEFT (biggest), 3 opponent
+  // boards as narrow FULL-HEIGHT columns side by side on the right.
+  // Each opponent column: name up top, thin status bar, full board
+  // (never cropped — drawPane scales to whatever size it's given),
+  // and a colored score badge at the very bottom.
+  const GAP        = 4;
+  const HDR_ME     = 28;   // header height for the main (local) panel
+  const HDR_MINI   = 18;   // compact header for opponent columns
+  const FOOT_MINI  = 30;   // colored score-badge footer height for opponents
+  const ME_FRAC    = 0.40; // main panel fraction of total width
+  const ME_W       = Math.round(W * ME_FRAC) - GAP;
+  const OPP_W      = Math.floor((W - ME_W - GAP * 3) / 3);
 
-  // Build display order: local player first, then opponents left-to-right
+  // Build display order: local player first (main), then 3 opponents (side columns)
   const opponents = [0,1,2,3].filter(i => i !== localPlayerIdx);
   const displayOrder = [localPlayerIdx, ...opponents]; // [me, opp0, opp1, opp2]
 
-  // Compute X positions
+  // Per-panel geometry: {x,y,w,h} — all full height, side by side
   const widths = displayOrder.map((pi, di) => di === 0 ? ME_W : OPP_W);
-  const xPos   = [];
+  const geom = [];
   let cx = 0;
   displayOrder.forEach((pi, di) => {
-    xPos.push(cx);
+    geom.push({x:cx, y:0, w:widths[di], h:H});
     cx += widths[di] + GAP;
   });
 
@@ -1963,14 +2150,15 @@ function game4P(){
   displayOrder.forEach((pi, di) => {
     const p    = players[pi];
     const isMe = di === 0;
-    const fx   = xPos[di];
-    const fw   = widths[di];
+    const HDR  = isMe ? HDR_ME : HDR_MINI;
+    const FOOT = isMe ? 0 : FOOT_MINI;
+    const {x:fx, y:fy, w:fw, h:fh} = geom[di];
     const clr  = p.dead ? "#223344" : p.color;
     const t1   = Date.now() * 0.004;
 
     // Panel background
     ctx.fillStyle = isMe ? "#07071e" : "#05051a";
-    ctx.fillRect(fx, 0, fw, H);
+    ctx.fillRect(fx, fy, fw, fh);
 
     // Top colored accent bar
     const topH = 4;
@@ -1980,28 +2168,28 @@ function game4P(){
     } else {
       ctx.fillStyle = "#1a1a2e";
     }
-    ctx.fillRect(fx, 0, fw, topH);
+    ctx.fillRect(fx, fy, fw, topH);
 
     // Header background
     ctx.fillStyle = p.dead ? "rgba(10,10,22,0.95)" : `rgba(${hexRgb(p.color)},0.18)`;
-    ctx.fillRect(fx, topH, fw, HDR);
+    ctx.fillRect(fx, fy + topH, fw, HDR);
 
     // Header bottom divider line
     ctx.fillStyle = p.dead ? "#1a2233" : `rgba(${hexRgb(p.color)},0.6)`;
-    ctx.fillRect(fx, topH + HDR - 2, fw, 2);
+    ctx.fillRect(fx, fy + topH + HDR - 2, fw, 2);
 
-    // "P1 · NAME" label left side
-    const pnum = `P${pi+1}`;
-    ctx.font = `${isMe?8:7}px ${PX}`;
-    ctx.fillStyle = p.dead ? "#334455" : clr;
-    if(!p.dead){ ctx.shadowColor = clr; ctx.shadowBlur = isMe?10:6; }
-    ctx.fillText(pnum, fx + 6, topH + HDR - 8);
-    ctx.shadowBlur = 0;
-
-    // YOU badge for main panel
     if(isMe){
+      // "P1" label left side
+      const pnum = `P${pi+1}`;
+      ctx.font = `8px ${PX}`;
+      ctx.fillStyle = p.dead ? "#334455" : clr;
+      if(!p.dead){ ctx.shadowColor = clr; ctx.shadowBlur = 10; }
+      ctx.fillText(pnum, fx + 6, fy + topH + HDR - 8);
+      ctx.shadowBlur = 0;
+
+      // YOU badge
       const bx = fx + ctx.measureText(pnum).width + 10;
-      const by = topH + 5;
+      const by = fy + topH + 5;
       ctx.fillStyle = `rgba(${hexRgb(me.color)},0.25)`;
       ctx.fillRect(bx, by, 22, 12);
       ctx.strokeStyle = me.color; ctx.lineWidth = 1;
@@ -2010,32 +2198,49 @@ function game4P(){
       ctx.font = `6px ${PX}`;
       ctx.fillText("YOU", bx + 3, by + 9);
       ctx.shadowBlur = 0;
-    }
 
-    // Player name centered
-    ctx.font = `${isMe?8:7}px ${PX}`;
-    const nm  = p.name || `P${pi+1}`;
-    const nmw = ctx.measureText(nm).width;
-    if(!p.dead){ ctx.shadowColor = p.color; ctx.shadowBlur = isMe?10:6; }
-    ctx.fillStyle = p.dead ? "#445566" : p.color;
-    ctx.fillText(nm, fx + (fw - nmw) / 2, topH + HDR - 8);
-    ctx.shadowBlur = 0;
-
-    // Score right side
-    ctx.font = `6px ${PX}`;
-    const sc  = `${p.score}`;
-    const scw = ctx.measureText(sc).width;
-    ctx.fillStyle = p.dead ? "#334455" : C.amber;
-    ctx.fillText(sc, fx + fw - scw - 6, topH + HDR - 8);
-
-    // Combo badge
-    if(p.combo > 1 && !p.dead){
-      const cb    = `x${p.combo}`;
-      const cbClr = p.combo >= 5 ? C.amber : C.green;
-      const cbw   = ctx.measureText(cb).width;
-      ctx.fillStyle = cbClr; ctx.shadowColor = cbClr; ctx.shadowBlur = 5;
-      ctx.fillText(cb, fx + fw - scw - cbw - 12, topH + HDR - 8);
+      // Player name centered
+      ctx.font = `8px ${PX}`;
+      const nm  = p.name || `P${pi+1}`;
+      const nmw = ctx.measureText(nm).width;
+      if(!p.dead){ ctx.shadowColor = p.color; ctx.shadowBlur = 10; }
+      ctx.fillStyle = p.dead ? "#445566" : p.color;
+      ctx.fillText(nm, fx + (fw - nmw) / 2, fy + topH + HDR - 8);
       ctx.shadowBlur = 0;
+
+      // Score + combo, right side (main panel keeps them in the header)
+      ctx.font = `6px ${PX}`;
+      const sc  = `${p.score}`;
+      const scw = ctx.measureText(sc).width;
+      ctx.fillStyle = p.dead ? "#334455" : C.amber;
+      ctx.fillText(sc, fx + fw - scw - 6, fy + topH + HDR - 8);
+      if(p.combo > 1 && !p.dead){
+        const cb    = `x${p.combo}`;
+        const cbClr = p.combo >= 5 ? C.amber : C.green;
+        const cbw   = ctx.measureText(cb).width;
+        ctx.fillStyle = cbClr; ctx.shadowColor = cbClr; ctx.shadowBlur = 5;
+        ctx.fillText(cb, fx + fw - scw - cbw - 12, fy + topH + HDR - 8);
+        ctx.shadowBlur = 0;
+      }
+    } else {
+      // Opponent column header — just the name, centered
+      ctx.font = `7px ${PX}`;
+      const nm  = p.name || `P${pi+1}`;
+      const nmw = ctx.measureText(nm).width;
+      if(!p.dead){ ctx.shadowColor = p.color; ctx.shadowBlur = 6; }
+      ctx.fillStyle = p.dead ? "#445566" : p.color;
+      ctx.fillText(nm, fx + (fw - nmw) / 2, fy + topH + HDR - 6);
+      ctx.shadowBlur = 0;
+
+      // Thin status bar right under the header — fills up with combo,
+      // flashes red at high danger, like a mini attack/health meter
+      const barY = fy + topH + HDR;
+      const barH = 5;
+      ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(fx, barY, fw, barH);
+      const esc0 = getEscalation(p.score);
+      const barPct = p.dead ? 0 : Math.min(1, (p.combo||0) / 6);
+      const barClr = esc0.danger >= 3 ? C.red : esc0.danger >= 2 ? C.amber : p.color;
+      ctx.fillStyle = barClr; ctx.fillRect(fx, barY, fw * barPct, barH);
     }
 
     // Danger pulse overlay
@@ -2043,12 +2248,13 @@ function game4P(){
     if(esc2.danger >= 3 && !p.dead){
       const pulse = 0.04 + 0.03 * Math.sin(Date.now() * 0.008 + di);
       ctx.fillStyle = `rgba(255,20,50,${pulse.toFixed(3)})`;
-      ctx.fillRect(fx, 0, fw, H);
+      ctx.fillRect(fx, fy, fw, fh);
     }
 
     // ── Game content ─────────────────────────────────────────────────────────
-    const contentY = topH + HDR;
-    const contentH = H - contentY;
+    const barSpace = isMe ? 0 : 5; // room for the mini status bar
+    const contentY = fy + topH + HDR + barSpace;
+    const contentH = fh - topH - HDR - barSpace - FOOT;
     ctx.save();
     ctx.beginPath();
     ctx.rect(fx, contentY, fw, contentH);
@@ -2064,20 +2270,40 @@ function game4P(){
       if(p.disconnected){
         // Player left / disconnected mid-game
         const dl1 = ctx.measureText("LEFT").width;
-        pxDraw("LEFT", fx + (fw-dl1)/2, H/2 - 8, "#557799", isMe?8:7, true);
+        pxDraw("LEFT", fx + (fw-dl1)/2, contentY + contentH/2 - 8, "#557799", isMe?8:7, true);
         const dl2 = ctx.measureText("GAME").width;
-        pxDraw("GAME", fx + (fw-dl2)/2, H/2 + 8, "#557799", isMe?8:7, true);
+        pxDraw("GAME", fx + (fw-dl2)/2, contentY + contentH/2 + 8, "#557799", isMe?8:7, true);
       } else {
         const dw1 = ctx.measureText("GAME").width;
-        pxDraw("GAME", fx + (fw-dw1)/2, H/2 - 8, C.red, isMe?8:7, true);
+        pxDraw("GAME", fx + (fw-dw1)/2, contentY + contentH/2 - 8, C.red, isMe?8:7, true);
         const dw2 = ctx.measureText("OVER").width;
-        pxDraw("OVER", fx + (fw-dw2)/2, H/2 + 8, C.red, isMe?8:7, true);
+        pxDraw("OVER", fx + (fw-dw2)/2, contentY + contentH/2 + 8, C.red, isMe?8:7, true);
       }
-      ctx.font = `6px ${PX}`;
-      const stxt = `${p.score}pts`;
-      const sw   = ctx.measureText(stxt).width;
-      ctx.fillStyle = C.amber;
-      ctx.fillText(stxt, fx + (fw-sw)/2, H/2 + 22);
+    }
+
+    // Colored score badge footer for opponent columns — like the score
+    // box under each rival board in Tetris 99 / Tetris Effect battle screens
+    if(!isMe){
+      const footY = fy + fh - FOOT;
+      const footClr = p.dead ? "#334455" : p.color;
+      ctx.fillStyle = p.dead ? "rgba(15,15,28,0.9)" : `rgba(${hexRgb(p.color)},0.22)`;
+      ctx.fillRect(fx, footY, fw, FOOT);
+      ctx.fillStyle = footClr; ctx.fillRect(fx, footY, fw, 2);
+      ctx.font = `10px ${PX}`;
+      const sc  = `${p.score}`;
+      const scw = ctx.measureText(sc).width;
+      if(!p.dead){ ctx.shadowColor = footClr; ctx.shadowBlur = 8; }
+      ctx.fillStyle = footClr;
+      ctx.fillText(sc, fx + (fw - scw) / 2, footY + FOOT / 2 + 8);
+      ctx.shadowBlur = 0;
+      if(p.combo > 1 && !p.dead){
+        ctx.font = `6px ${PX}`;
+        const cb = `x${p.combo}`;
+        const cbw = ctx.measureText(cb).width;
+        const cbClr = p.combo >= 5 ? C.amber : C.green;
+        ctx.fillStyle = cbClr;
+        ctx.fillText(cb, fx + (fw - cbw) / 2, footY + FOOT - 4);
+      }
     }
 
     // Vertical divider (right edge of each panel except last)
@@ -2239,8 +2465,13 @@ function game(){
 
 // ── MENUS ─────────────────────────────────────────────────────────────────────
 function menu(){
-  ctx.fillStyle="rgba(0,5,20,0.7)"; ctx.fillRect(0,80,W,100);
-  ctx.fillStyle=C.teal; ctx.fillRect(0,80,W,2); ctx.fillRect(0,178,W,2);
+  const bandGrad=ctx.createLinearGradient(0,80,0,180);
+  bandGrad.addColorStop(0,`rgba(${hexRgb(C.teal)},0.10)`);
+  bandGrad.addColorStop(0.5,"rgba(0,5,20,0.75)");
+  bandGrad.addColorStop(1,`rgba(${hexRgb(C.blue)},0.08)`);
+  ctx.fillStyle=bandGrad; ctx.fillRect(0,80,W,100);
+  ctx.save(); ctx.shadowColor=C.teal; ctx.shadowBlur=8; ctx.fillStyle=C.teal; ctx.fillRect(0,80,W,2); ctx.restore();
+  ctx.save(); ctx.shadowColor=C.blue; ctx.shadowBlur=8; ctx.fillStyle=C.blue; ctx.fillRect(0,178,W,2); ctx.restore();
   centered("WORD",132,C.teal,36,true); centered("ARENA",174,C.blue,36,true);
   menuButtons.forEach((b,i)=>pixelBox(b,menuColors[i]));
 
@@ -2285,13 +2516,30 @@ function drawMusicIcon(){
 function lobbyWait(){
   const is4P=lobby.required===4;
   ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(0,0,W,H);
-  ctx.fillStyle="#05051a"; ctx.fillRect(30,80,540,560);
-  ctx.strokeStyle=C.teal; ctx.shadowColor=C.teal; ctx.shadowBlur=16; ctx.lineWidth=2; ctx.strokeRect(30,80,540,560); ctx.shadowBlur=0;
-  [[30,80],[566,80],[30,636],[566,636]].forEach(([px,py])=>{ctx.fillStyle=C.teal;ctx.fillRect(px-1,py-1,10,2);ctx.fillRect(px-1,py-1,2,10);});
+  glassPanel(30,80,540,560,C.teal,10);
   const titleTxt=countdownActive?"GET READY!":"LOBBY";
   ctx.font=`11px ${PX}`; pxDraw(titleTxt,W/2-ctx.measureText(titleTxt).width/2,112,countdownActive?C.amber:C.teal,11,true);
-  ctx.fillStyle="#070720"; ctx.fillRect(80,124,440,52); ctx.strokeStyle=C.green; ctx.lineWidth=2; ctx.strokeRect(80,124,440,52);
-  pxDraw("ROOM CODE",98,142,"#aabbcc",8,false); centered(lobby.code||"----",165,C.green,18,true);
+  // Chat toggle button (text chat only, in the lobby — safer than voice/video for public rooms)
+  const chatBtn={x:40,y:84,w:118,h:18};
+  const chatHov=hit(chatBtn,lastMouseX,lastMouseY);
+  const chatClr=unreadChat>0?C.amber:(chatOpen?C.green:C.teal);
+  ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(chatBtn.x,chatBtn.y,chatBtn.w,chatBtn.h);
+  ctx.strokeStyle=chatClr; ctx.lineWidth=1; ctx.strokeRect(chatBtn.x,chatBtn.y,chatBtn.w,chatBtn.h);
+  ctx.font=`7px ${PX}`;
+  const chatLbl="\u{1F4AC} CHAT"+(unreadChat>0?` (${Math.min(unreadChat,9)})`:"");
+  ctx.shadowColor=chatClr; ctx.shadowBlur=chatHov?8:0; ctx.fillStyle=chatClr;
+  ctx.fillText(chatLbl,chatBtn.x+8,chatBtn.y+13); ctx.shadowBlur=0;
+  const codeBoxX=80,codeBoxW=330,copyBtnX=codeBoxX+codeBoxW+10,copyBtnW=100,codeY=124,codeH=52;
+  innerField(codeBoxX,codeY,codeBoxW,codeH,C.green,0.08);
+  pxDraw("ROOM CODE",codeBoxX+18,142,"#aabbcc",8,false);
+  ctx.font=`18px ${PX}`; const codeTxt=lobby.code||"----",ctw=ctx.measureText(codeTxt).width;
+  pxDraw(codeTxt,codeBoxX+(codeBoxW-ctw)/2,165,C.green,18,true);
+  const copyBtn={x:copyBtnX,y:codeY,w:copyBtnW,h:codeH};
+  const copyHov=hit(copyBtn,lastMouseX,lastMouseY);
+  const justCopied=copyCodeFlash&&Date.now()-copyCodeFlash<1200;
+  innerField(copyBtn.x,copyBtn.y,copyBtn.w,copyBtn.h,justCopied?C.green:(copyHov?C.amber:C.teal),justCopied?0.18:0.08);
+  ctx.font=`7px ${PX}`; const cbTxt=justCopied?"✓ COPIED!":"COPY",cbw=ctx.measureText(cbTxt).width;
+  pxDraw(cbTxt,copyBtn.x+(copyBtn.w-cbw)/2,copyBtn.y+copyBtn.h/2+3,justCopied?C.green:(copyHov?C.amber:C.teal),7,true);
   // Player panels
   const guestList=Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name||id,ready:p.ready||false,isMe:false}));
   let allPeers;
@@ -2302,7 +2550,10 @@ function lobbyWait(){
   for(let i=0;i<maxShow;i++){
     const col=i%2,row=Math.floor(i/2),px2=startX+col*(panelW+panelGap),py2=192+row*(panelH+panelGap);
     const p=allPeers[i],joined=!!p,clr=PLAYER_COLORS[i]||C.teal;
-    ctx.fillStyle="rgba(4,4,20,0.92)"; ctx.fillRect(px2,py2,panelW,panelH);
+    const pGrad=ctx.createLinearGradient(px2,py2,px2,py2+panelH);
+    pGrad.addColorStop(0,`rgba(${hexRgb(clr)},${joined?0.12:0.04})`);
+    pGrad.addColorStop(1,"rgba(2,2,12,0.92)");
+    ctx.fillStyle=pGrad; ctx.fillRect(px2,py2,panelW,panelH);
     ctx.strokeStyle=joined?(p.ready?C.green:clr):`rgba(${hexRgb(clr)},0.3)`;
     if(joined&&p.ready){ctx.shadowColor=C.green;ctx.shadowBlur=10;}
     ctx.lineWidth=2; ctx.strokeRect(px2,py2,panelW,panelH); ctx.shadowBlur=0;
@@ -2328,13 +2579,18 @@ function lobbyWait(){
   }
   const rcY=is4P?415:307;
   ctx.fillStyle="#070720"; ctx.fillRect(40,rcY,520,36); ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.strokeRect(40,rcY,520,36);
+  const rcGrad=ctx.createLinearGradient(40,rcY,40,rcY+36);
+  rcGrad.addColorStop(0,`rgba(${hexRgb(C.amber)},0.14)`); rcGrad.addColorStop(1,"rgba(4,4,16,0.85)");
+  ctx.fillStyle=rcGrad; ctx.fillRect(40,rcY,520,36);
   const rcTxt=`${lobbyReadyCount} / ${lobby.players} READY`;
   ctx.font=`9px ${PX}`; const rcw=ctx.measureText(rcTxt).width;
   const allRdy=lobbyReadyCount>=lobby.required&&lobby.players>=lobby.required;
   pxDraw(rcTxt,W/2-rcw/2,rcY+24,allRdy?C.green:C.amber,9,allRdy);
   const diffY=rcY+46;
   ctx.fillStyle="#070720"; ctx.fillRect(40,diffY,520,46); ctx.strokeStyle=C.dim; ctx.lineWidth=1; ctx.strokeRect(40,diffY,520,46);
-  ctx.fillStyle=`rgba(${hexRgb(C.purple)},0.12)`; ctx.fillRect(40,diffY,520,46);
+  const mmGrad=ctx.createLinearGradient(40,diffY,40,diffY+46);
+  mmGrad.addColorStop(0,`rgba(${hexRgb(C.purple)},0.16)`); mmGrad.addColorStop(1,"rgba(4,4,16,0.85)");
+  ctx.fillStyle=mmGrad; ctx.fillRect(40,diffY,520,46);
   ctx.font=`8px ${PX}`; const mlbl="★ MIXED MODE — ALL DIFFICULTIES COMBINED ★";
   const mlw=ctx.measureText(mlbl).width;
   ctx.shadowColor=C.purple; ctx.shadowBlur=8; ctx.fillStyle=C.purple; ctx.fillText(mlbl,W/2-mlw/2,diffY+20); ctx.shadowBlur=0;
@@ -2342,7 +2598,9 @@ function lobbyWait(){
   ctx.fillStyle="#556677"; ctx.fillText(msub,W/2-mslw/2,diffY+36);
   const hintY=diffY+58;
   const rdyHintClr=myReady?C.green:C.teal;
-  ctx.fillStyle=`rgba(${hexRgb(rdyHintClr)},0.12)`; ctx.fillRect(40,hintY,520,44);
+  const rdyGrad=ctx.createLinearGradient(40,hintY,40,hintY+44);
+  rdyGrad.addColorStop(0,`rgba(${hexRgb(rdyHintClr)},0.16)`); rdyGrad.addColorStop(1,"rgba(2,2,12,0.85)");
+  ctx.fillStyle=rdyGrad; ctx.fillRect(40,hintY,520,44);
   ctx.strokeStyle=myReady?C.green:`rgba(${hexRgb(C.teal)},0.4)`; ctx.lineWidth=2; ctx.strokeRect(40,hintY,520,44);
   if(myReady){if(Math.floor(Date.now()/500)%2===0){ctx.shadowColor=C.green;ctx.shadowBlur=12;}ctx.font=`9px ${PX}`;const rt="✓  YOU ARE READY  —  PRESS SPACE TO UNREADY";const rw=ctx.measureText(rt).width;ctx.fillStyle=C.green;ctx.fillText(rt,W/2-rw/2,hintY+27);ctx.shadowBlur=0;}
   else{ctx.font=`8px ${PX}`;const ht="PRESS  SPACE  TO  READY  UP";const hw=ctx.measureText(ht).width;const t2=Date.now()*0.004;const pulse=0.6+0.4*Math.sin(t2);ctx.fillStyle=`rgba(${hexRgb(C.teal)},${pulse.toFixed(2)})`;ctx.fillText(ht,W/2-hw/2,hintY+27);}
@@ -2352,6 +2610,9 @@ function lobbyWait(){
     const startHov=hit(startBtn,lastMouseX,lastMouseY),startClr=canStart?(startHov?C.green:C.teal):"#334455";
     const startTxt=canStart?"▶  START GAME  (ENTER)":!enoughPlayers?`WAITING FOR PLAYERS  (${lobby.players}/${lobby.required})`:`NOT ALL READY  (${lobbyReadyCount}/${lobby.players})`;
     ctx.fillStyle=canStart?`rgba(${hexRgb(C.teal)},0.12)`:`rgba(20,20,40,0.6)`; ctx.fillRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
+    const sbGrad=ctx.createLinearGradient(startBtn.x,startBtn.y,startBtn.x,startBtn.y+startBtn.h);
+    sbGrad.addColorStop(0,canStart?`rgba(${hexRgb(C.teal)},0.16)`:"rgba(20,20,40,0.5)"); sbGrad.addColorStop(1,"rgba(2,2,12,0.85)");
+    ctx.fillStyle=sbGrad; ctx.fillRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
     ctx.strokeStyle=startClr; ctx.lineWidth=2; ctx.strokeRect(startBtn.x,startBtn.y,startBtn.w,startBtn.h);
     if(canStart&&startHov){ctx.shadowColor=C.green;ctx.shadowBlur=16;}
     ctx.font=`8px ${PX}`; const stw=ctx.measureText(startTxt).width;
@@ -2382,6 +2643,7 @@ function lobbyWait(){
     centered("LEAVE LOBBY?",272,"#ffffff",14,false); centered("Are you sure?",310,C.blue,10,false);
     pixelBox({text:"YES",x:160,y:345,w:120,h:50},C.red); pixelBox({text:"NO",x:320,y:345,w:120,h:50},C.green);
   }
+  if(chatOpen) drawLobbyChat();
   if(countdownActive){
     ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#05051a"; ctx.fillRect(140,220,320,250);
@@ -2396,16 +2658,56 @@ function lobbyWait(){
   // Edit Name modal — now in Options screen
 }
 
+// Chat modal geometry — shared by draw + click handling
+const CHAT_PANEL={x:90,y:140,w:420,h:420};
+const CHAT_CLOSE_BTN={x:CHAT_PANEL.x+CHAT_PANEL.w-32,y:CHAT_PANEL.y+8,w:24,h:20};
+const CHAT_INPUT_BOX={x:CHAT_PANEL.x+16,y:CHAT_PANEL.y+CHAT_PANEL.h-54,w:CHAT_PANEL.w-32,h:36};
+
+function drawLobbyChat(){
+  const p=CHAT_PANEL;
+  ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,W,H);
+  glassPanel(p.x,p.y,p.w,p.h,C.teal,8);
+  ctx.font=`9px ${PX}`; pxDraw("LOBBY CHAT",p.x+16,p.y+26,C.teal,9,true);
+  ctx.font=`6px ${PX}`; ctx.fillStyle="#556677"; ctx.fillText("TEXT ONLY — VISIBLE TO PLAYERS IN THIS ROOM",p.x+16,p.y+38);
+  // Close button
+  const closeHov=hit(CHAT_CLOSE_BTN,lastMouseX,lastMouseY);
+  ctx.strokeStyle=closeHov?C.red:"#556677"; ctx.lineWidth=1.5; ctx.strokeRect(CHAT_CLOSE_BTN.x,CHAT_CLOSE_BTN.y,CHAT_CLOSE_BTN.w,CHAT_CLOSE_BTN.h);
+  ctx.font=`9px ${PX}`; ctx.fillStyle=closeHov?C.red:"#8899aa"; ctx.fillText("X",CHAT_CLOSE_BTN.x+8,CHAT_CLOSE_BTN.y+15);
+  // Message log
+  const logX=p.x+16, logW=p.w-32, logTop=p.y+50, logBottom=CHAT_INPUT_BOX.y-14;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(logX,logTop,logW,logBottom-logTop); ctx.clip();
+  ctx.font=`7px ${PX}`;
+  const lineH=17, maxLines=Math.floor((logBottom-logTop)/lineH);
+  const shown=chatMessages.slice(-maxLines);
+  if(shown.length===0){
+    ctx.fillStyle="#445566"; ctx.fillText("No messages yet — say hi!",logX,logTop+16);
+  } else {
+    shown.forEach((m,i)=>{
+      const ly=logTop+16+i*lineH;
+      const nameClr=m.mine?C.green:C.amber;
+      ctx.fillStyle=nameClr; ctx.fillText(m.name+":",logX,ly);
+      const nw=ctx.measureText(m.name+": ").width;
+      ctx.fillStyle="#ccddee"; ctx.fillText(m.text,logX+nw+4,ly);
+    });
+  }
+  ctx.restore();
+  // Input box
+  const focusClr=C.teal;
+  innerField(CHAT_INPUT_BOX.x,CHAT_INPUT_BOX.y,CHAT_INPUT_BOX.w,CHAT_INPUT_BOX.h,focusClr,0.1);
+  const cursor=Math.floor(Date.now()/500)%2===0?"_":" ";
+  ctx.font=`8px ${PX}`; ctx.fillStyle="#eeeeee";
+  ctx.fillText((chatInput+cursor).slice(-46),CHAT_INPUT_BOX.x+10,CHAT_INPUT_BOX.y+23);
+  ctx.font=`6px ${PX}`; ctx.fillStyle="#556677";
+  ctx.fillText("ENTER TO SEND  ·  ESC TO CLOSE",p.x+16,p.y+p.h-8);
+}
+
 function drawJoinGame(){
   centered("JOIN GAME",110,C.blue,16,true);
   pxDraw("ENTER ROOM CODE:",80,280,"#aabbcc",10,false);
   const tbx=80,tby=300,tbw=440,tbh=64;
-  ctx.fillStyle="rgba(0,5,20,0.9)"; ctx.fillRect(tbx,tby,tbw,tbh);
   const tbBC=(joinErrorMsg&&!joinConnecting)?C.red:joinConnecting?C.amber:C.teal;
-  ctx.strokeStyle=tbBC; ctx.lineWidth=2; ctx.strokeRect(tbx,tby,tbw,tbh);
-  const s=6; ctx.fillStyle=tbBC;
-  ctx.fillRect(tbx,tby,s,2);ctx.fillRect(tbx,tby,2,s);ctx.fillRect(tbx+tbw-s,tby,s,2);ctx.fillRect(tbx+tbw-2,tby,2,s);
-  ctx.fillRect(tbx,tby+tbh-2,s,2);ctx.fillRect(tbx,tby+tbh-s,2,s);ctx.fillRect(tbx+tbw-s,tby+tbh-2,s,2);ctx.fillRect(tbx+tbw-2,tby+tbh-s,2,s);
+  glassPanel(tbx,tby,tbw,tbh,tbBC,6);
   const cursor=Math.floor(Date.now()/500)%2===0?"_":" ",displayText=joinInput+cursor;
   ctx.font=`18px ${PX}`; const dtw=ctx.measureText(displayText).width;
   pxDraw(displayText,tbx+(tbw-dtw)/2,tby+tbh/2+8,C.teal,18,true);
@@ -2421,8 +2723,7 @@ function drawOptions(){
   pxDraw("AUDIO",100,188,"#6677aa",9,false);
   ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,196,400,1);
   const son=soundEnabled,tclr=son?C.teal:"#445566";
-  ctx.fillStyle=son?`rgba(${hexRgb(C.teal)},0.08)`:"rgba(20,20,40,0.8)"; ctx.fillRect(150,210,300,65);
-  ctx.strokeStyle=tclr; ctx.lineWidth=2; ctx.strokeRect(150,210,300,65);
+  innerField(150,210,300,65,tclr,son?0.14:0.03);
   const ix=175,iy=235; ctx.fillStyle=tclr;
   ctx.fillRect(ix,iy+4,6,10); ctx.fillRect(ix+6,iy,6,18); ctx.fillRect(ix+12,iy+2,4,14);
   if(son){ctx.strokeStyle=tclr;ctx.lineWidth=2;ctx.beginPath();ctx.arc(ix+20,iy+9,8,-0.6,0.6);ctx.stroke();ctx.beginPath();ctx.arc(ix+20,iy+9,14,-0.6,0.6);ctx.stroke();}
@@ -2434,8 +2735,7 @@ function drawOptions(){
   ctx.fillStyle=C.dim+"88"; ctx.fillRect(100,330,400,1);
   const nameActive=optionsEditingName;
   const nameClr=nameActive?C.teal:C.purple;
-  ctx.fillStyle=nameActive?`rgba(${hexRgb(C.teal)},0.1)`:`rgba(${hexRgb(C.purple)},0.06)`; ctx.fillRect(100,340,400,52);
-  ctx.strokeStyle=nameClr; ctx.lineWidth=2; ctx.strokeRect(100,340,400,52);
+  innerField(100,340,400,52,nameClr,nameActive?0.10:0.06);
   if(nameActive){
     const cur=Math.floor(Date.now()/500)%2===0?"_":" ";
     const disp=optionsNameInput+cur;
@@ -2454,7 +2754,9 @@ function drawOptions(){
     const th=THEMES[i],col=i%3,row=Math.floor(i/3),tx=110+col*130,ty=461+row*68,isActive=i===currentThemeIdx;
     const t=Date.now()*0.004,pulse=0.5+0.5*Math.sin(t);
     ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(tx+3,ty+3,110,52);
-    ctx.fillStyle=`rgba(${hexRgb(th.teal)},0.12)`; ctx.fillRect(tx,ty,110,52);
+    const thGrad=ctx.createLinearGradient(tx,ty,tx,ty+52);
+    thGrad.addColorStop(0,`rgba(${hexRgb(th.teal)},0.18)`); thGrad.addColorStop(1,"rgba(4,4,14,0.85)");
+    ctx.fillStyle=thGrad; ctx.fillRect(tx,ty,110,52);
     [th.teal,th.blue,th.purple,th.amber,th.green].forEach((clr,si)=>{ctx.fillStyle=clr;ctx.fillRect(tx+si*22,ty+38,22,14);});
     ctx.lineWidth=2;
     if(isActive){ctx.strokeStyle=th.teal;ctx.shadowColor=th.teal;ctx.shadowBlur=12*pulse;ctx.strokeRect(tx,ty,110,52);ctx.shadowBlur=0;ctx.fillStyle=th.teal;ctx.shadowColor=th.teal;ctx.shadowBlur=8;ctx.beginPath();ctx.arc(tx+100,ty+10,5,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;}
@@ -2469,23 +2771,23 @@ function drawOptions(){
 // ── SPLASH ────────────────────────────────────────────────────────────────────
 function drawSplash(){if(splashPhase==="press")drawSplashPress();else drawSplashName();}
 function drawSplashPress(){
-  ctx.fillStyle="rgba(0,5,20,0.85)"; ctx.fillRect(60,180,480,160); ctx.strokeStyle=C.teal; ctx.lineWidth=2; ctx.strokeRect(60,180,480,160);
-  const s=8; ctx.fillStyle=C.teal;
-  [[60,180],[536,180],[60,336],[536,336]].forEach(([px,py])=>{ctx.fillRect(px,py,s,2);ctx.fillRect(px,py,2,s);});
+  glassPanel(60,180,480,160,C.teal);
   centered("WORD",240,C.teal,36,true); centered("ARENA",282,C.blue,36,true);
   if(Math.floor(Date.now()/550)%2===0) centered("PRESS ANY KEY TO START",420,C.amber,10,true);
 }
 function drawSplashName(){
-  ctx.fillStyle="rgba(0,5,20,0.7)"; ctx.fillRect(0,40,W,80);
-  ctx.fillStyle=C.teal; ctx.fillRect(0,40,W,2); ctx.fillRect(0,118,W,2);
+  const bandGrad=ctx.createLinearGradient(0,40,0,120);
+  bandGrad.addColorStop(0,`rgba(${hexRgb(C.teal)},0.10)`);
+  bandGrad.addColorStop(0.5,"rgba(0,5,20,0.75)");
+  bandGrad.addColorStop(1,`rgba(${hexRgb(C.blue)},0.08)`);
+  ctx.fillStyle=bandGrad; ctx.fillRect(0,40,W,80);
+  ctx.save(); ctx.shadowColor=C.teal; ctx.shadowBlur=8; ctx.fillStyle=C.teal; ctx.fillRect(0,40,W,2); ctx.restore();
+  ctx.save(); ctx.shadowColor=C.blue; ctx.shadowBlur=8; ctx.fillStyle=C.blue; ctx.fillRect(0,118,W,2); ctx.restore();
   centered("WORD",82,C.teal,24,true); centered("ARENA",110,C.blue,20,true);
-  ctx.fillStyle="rgba(5,5,25,0.92)"; ctx.fillRect(80,180,440,300); ctx.strokeStyle=C.purple; ctx.lineWidth=2; ctx.strokeRect(80,180,440,300);
-  const s=8; ctx.fillStyle=C.purple;
-  [[80,180],[516,180],[80,476],[516,476]].forEach(([px,py])=>{ctx.fillRect(px,py,s,2);ctx.fillRect(px,py,2,s);});
+  glassPanel(80,180,440,300,C.purple);
   centered("ENTER YOUR NAME",232,C.purple,12,true);
   const tbx=110,tby=268,tbw=380,tbh=56;
-  ctx.fillStyle="rgba(0,5,20,0.9)"; ctx.fillRect(tbx,tby,tbw,tbh);
-  const tbclr=usernameErr?C.red:C.teal; ctx.strokeStyle=tbclr; ctx.lineWidth=2; ctx.strokeRect(tbx,tby,tbw,tbh);
+  const tbclr=usernameErr?C.red:C.teal; innerField(tbx,tby,tbw,tbh,tbclr,0.08);
   const cursor=Math.floor(Date.now()/500)%2===0?"_":" ",display=usernameInput+cursor;
   ctx.font=`16px ${PX}`; const dtw=ctx.measureText(display).width;
   pxDraw(display,tbx+(tbw-dtw)/2,tby+tbh/2+7,C.teal,16,true);
@@ -2699,9 +3001,19 @@ function drawHowToPlay(){
   pixelBox({text:"< BACK TO MENU",x:160,y:H-54,w:280,h:46},bhov?C.amber:C.purple);
 }
 function htpBox(x,y,w,h,color){
+  const rgb=hexRgb(color);
   ctx.fillStyle="rgba(0,0,0,0.55)"; ctx.fillRect(x+3,y+3,w,h);
-  ctx.fillStyle="rgba(4,4,18,0.92)"; ctx.fillRect(x,y,w,h);
+  const grad=ctx.createLinearGradient(x,y,x,y+h);
+  grad.addColorStop(0,`rgba(${rgb},0.08)`);
+  grad.addColorStop(0.5,"rgba(4,4,18,0.92)");
+  grad.addColorStop(1,"rgba(2,2,10,0.95)");
+  ctx.fillStyle=grad; ctx.fillRect(x,y,w,h);
+  const hl=ctx.createLinearGradient(x,y,x,y+Math.min(h*0.35,26));
+  hl.addColorStop(0,"rgba(255,255,255,0.06)"); hl.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.fillStyle=hl; ctx.fillRect(x+2,y+2,w-4,Math.min(h*0.35,26));
+  ctx.save(); ctx.shadowColor=color; ctx.shadowBlur=4;
   ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.strokeRect(x,y,w,h);
+  ctx.restore();
   const s=5; ctx.fillStyle=color;
   ctx.fillRect(x,y,s,2);ctx.fillRect(x,y,2,s);ctx.fillRect(x+w-s,y,s,2);ctx.fillRect(x+w-2,y,2,s);
   ctx.fillRect(x,y+h-2,s,2);ctx.fillRect(x,y+h-s,2,s);ctx.fillRect(x+w-s,y+h-2,s,2);ctx.fillRect(x+w-2,y+h-s,2,s);
@@ -2813,6 +3125,17 @@ function loop(){
   else if(state==="gameover_multi") gameover_multi();
 
   if(state!=="splash") drawMusicIcon();
+
+  drawClickRipple();
+
+  // Screen fade-in transition — plays whenever the visible state changes
+  if(state!==visualState){stateChangeTime=Date.now();visualState=state;}
+  const sinceChange=Date.now()-stateChangeTime;
+  if(sinceChange<TRANSITION_MS){
+    const p=sinceChange/TRANSITION_MS;
+    ctx.fillStyle=`rgba(2,2,10,${((1-p)*0.85).toFixed(3)})`;
+    ctx.fillRect(0,0,W,H);
+  }
 
   // Global countdown overlay — fires even if player navigated to menu
   if(countdownActive && state!=="game" && state!=="lobby_wait" && lobby.role){
