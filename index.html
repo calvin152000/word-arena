@@ -745,11 +745,12 @@ function openHostPeer(code, peerId, retriesLeft){
       {urls:"stun:stun.l.google.com:19302"},
       {urls:"stun:stun1.l.google.com:19302"},
       {urls:"stun:global.stun.twilio.com:3478"},
-      {urls:"stun:openrelay.metered.ca:80"},
-      {urls:"turn:openrelay.metered.ca:80", username:"openrelayproject", credential:"openrelayproject"},
-      {urls:"turn:openrelay.metered.ca:443", username:"openrelayproject", credential:"openrelayproject"},
-      {urls:"turn:openrelay.metered.ca:443?transport=tcp", username:"openrelayproject", credential:"openrelayproject"},
-    ]},
+      {urls:"stun:global.relay.metered.ca:80"},
+      {urls:"turn:global.relay.metered.ca:80", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+      {urls:"turn:global.relay.metered.ca:80?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+      {urls:"turn:global.relay.metered.ca:443", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+      {urls:"turns:global.relay.metered.ca:443?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+    ], iceCandidatePoolSize:10},
     debug:0
   });
   myPeer.on("open", ()=>{
@@ -843,11 +844,12 @@ function openGuestPeerById(targetPeerId){
         {urls:"stun:stun.l.google.com:19302"},
         {urls:"stun:stun1.l.google.com:19302"},
         {urls:"stun:global.stun.twilio.com:3478"},
-        {urls:"stun:openrelay.metered.ca:80"},
-        {urls:"turn:openrelay.metered.ca:80", username:"openrelayproject", credential:"openrelayproject"},
-        {urls:"turn:openrelay.metered.ca:443", username:"openrelayproject", credential:"openrelayproject"},
-        {urls:"turn:openrelay.metered.ca:443?transport=tcp", username:"openrelayproject", credential:"openrelayproject"},
-      ]}
+        {urls:"stun:global.relay.metered.ca:80"},
+        {urls:"turn:global.relay.metered.ca:80", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turn:global.relay.metered.ca:80?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turn:global.relay.metered.ca:443", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turns:global.relay.metered.ca:443?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+      ], iceCandidatePoolSize:10}
     });
     myPeer.on("open", ()=> _doGuestConnectById(targetPeerId, 0));
     myPeer.on("error", ()=>{ joinErrorMsg="RECONNECT FAILED"; sfxMiss(); });
@@ -917,11 +919,12 @@ function openGuestPeer(code, isMigration){
         {urls:"stun:stun.l.google.com:19302"},
         {urls:"stun:stun1.l.google.com:19302"},
         {urls:"stun:global.stun.twilio.com:3478"},
-        {urls:"stun:openrelay.metered.ca:80"},
-        {urls:"turn:openrelay.metered.ca:80", username:"openrelayproject", credential:"openrelayproject"},
-        {urls:"turn:openrelay.metered.ca:443", username:"openrelayproject", credential:"openrelayproject"},
-        {urls:"turn:openrelay.metered.ca:443?transport=tcp", username:"openrelayproject", credential:"openrelayproject"},
-      ]}
+        {urls:"stun:global.relay.metered.ca:80"},
+        {urls:"turn:global.relay.metered.ca:80", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turn:global.relay.metered.ca:80?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turn:global.relay.metered.ca:443", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+        {urls:"turns:global.relay.metered.ca:443?transport=tcp", username:"d74b711e41036bbc95c59e50", credential:"k/qyRXeLLtR9hKZF"},
+      ], iceCandidatePoolSize:10}
     });
     myPeer.on("open", ()=> _doGuestConnect(code, isMigration, 0));
     myPeer.on("error", (err)=>{
@@ -941,8 +944,8 @@ function _doGuestConnect(code, isMigration, retries){
   const timeout = setTimeout(()=>{
     if(!conn.open){
       conn.close();
-      if(retries < 8){
-        setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 800);
+      if(retries < 10){
+        setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 300);
       } else if(isMigration && lobby.hostPeerId){
         // New host may have failed to reclaim the room code and fallen back
         // to their own player id — try that directly as a last resort.
@@ -954,7 +957,7 @@ function _doGuestConnect(code, isMigration, retries){
         sfxMiss();
       }
     }
-  }, 4000);
+  }, 2200);
 
   conn.on("open", ()=>{
     clearTimeout(timeout);
@@ -986,8 +989,8 @@ function _doGuestConnect(code, isMigration, retries){
   conn.on("error", ()=>{
     clearTimeout(timeout);
     hostConn=null;
-    if(retries < 8){
-      setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 800);
+    if(retries < 10){
+      setTimeout(()=>_doGuestConnect(code, isMigration, retries+1), 300);
     } else if(isMigration && lobby.hostPeerId){
       joinConnecting=false;
       openGuestPeerById(lobby.hostPeerId);
