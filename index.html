@@ -793,11 +793,10 @@ function openHostPeer(code, peerId, retriesLeft){
           sfxMiss();
         });
         conn.on("error", e=>console.warn("Guest conn error:",e));
-        // Send welcome so guest knows who is here
-        conn.send({type:"welcome", from:myPlayerId, name:username||"HOST",
-          hostReady:myReady, hostPeerId:myPlayerId, hostConnectId:myPeer.id, code, required:lobby.required,
-          peers:Object.entries(lobbyPeers).filter(([id])=>id!==conn._peerId)
-            .map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+        // Welcome is now sent from inside the validated "join" handler in onLobbyMsg,
+        // only after confirming the guest's requested mode matches this lobby's
+        // required player count — sending it here unconditionally let mismatched
+        // guests sneak into the lobby UI before the "rejected" message arrived.
       });
     });
   });
@@ -883,6 +882,12 @@ function _doGuestConnectById(targetPeerId, retries){
       else onLobbyMsg(data, conn);
     });
     conn.on("close", ()=>{
+      // If we already migrated because of an explicit "leave" message on this
+      // same connection, skip — otherwise this fires a SECOND migration attempt
+      // ~400ms later (once the underlying PeerJS connection actually closes),
+      // which corrupts lobbyPeers (deletes the just-elected host's entry) and
+      // causes different guests to disagree on who the new host is.
+      if(conn._leftHandled) return;
       // Host disconnected again — try migration again
       if(state==="lobby_wait"||state==="game"||state==="gameover_multi"){
         attemptHostMigration();
@@ -968,6 +973,8 @@ function _doGuestConnect(code, isMigration, retries){
       else onLobbyMsg(data, conn);
     });
     conn.on("close", ()=>{
+      // Same duplicate-migration guard as _doGuestConnectById — see comment there.
+      if(conn._leftHandled) return;
       // Always attempt migration if we lose host connection, regardless of state
       // Mark old host slot as disconnected if mid-game
       if((state==="game"||state==="gameover_multi") && lobby.hostPeerId){
@@ -1084,13 +1091,23 @@ function onLobbyMsg(data, fromConn){
     if(takenNames.includes(assignedName)){
       let s=2; while(takenNames.includes(assignedName+"_"+s)) s++; assignedName+="_"+s;
     }
-    if(!lobbyPeers[from]) sfxPlayerJoin();
+    const isFirstJoin = !lobbyPeers[from];
+    if(isFirstJoin) sfxPlayerJoin();
     lobbyPeers[from]={name:assignedName,ready:false,conn:fromConn};
     if(assignedName!==(name||from)){
       if(fromConn){ try{fromConn.send({type:"name_assigned",name:assignedName});}catch(e){} }
     }
     if(fromConn) fromConn._peerId=from;
     lobby.players=Object.keys(lobbyPeers).length+1;
+    if(isFirstJoin && fromConn){
+      // Mode check already passed above — safe to welcome this guest in now.
+      try{
+        fromConn.send({type:"welcome", from:myPlayerId, name:username||"HOST",
+          hostReady:myReady, hostPeerId:myPlayerId, hostConnectId:myPeer&&myPeer.id, code:lobby.code, required:lobby.required,
+          peers:Object.entries(lobbyPeers).filter(([id])=>id!==from)
+            .map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
+      }catch(e){}
+    }
     broadcastLobby({type:"sync_peers", total:lobby.players, hostPeerId:myPlayerId, hostConnectId:myPeer&&myPeer.id,
       peers:Object.entries(lobbyPeers).map(([id,p])=>({id,name:p.name,ready:p.ready||false}))});
 
@@ -1203,6 +1220,10 @@ function onLobbyMsg(data, fromConn){
   } else if(type==="leave"){
     // Host left — trigger migration immediately
     if(lobby.role==="join" && from===lobby.hostPeerId){
+      // Mark this connection so its own "close" event (fired ~400ms later when
+      // the host's peer actually tears down) doesn't trigger a second, conflicting
+      // migration attempt on top of this one.
+      if(fromConn) fromConn._leftHandled = true;
       attemptHostMigration();
       return;
     }
